@@ -7,8 +7,9 @@
     "enabled": true
   },
   "vars": {
-    // 本番はGitHub PagesのオリジナルURLに絞る。カンマ区切りで複数可。
-    "ALLOWED_ORIGINS": "*",
+    // ブラウザから叩けるオリジンを限定する。カンマ区切りで複数可。
+    // ローカル開発時は "http://localhost:8123" などを一時的に足す。
+    "ALLOWED_ORIGINS": "https://masaki-lunaless.github.io",
 
     // TTSプロバイダ: "openai" | "aivis" | "none"。
     // 既定はopenai（Whisper用のキーで鳴るので追加契約が要らない）。

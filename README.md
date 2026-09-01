@@ -45,7 +45,8 @@ npx wrangler secret put ACCESS_TOKENS   # 例: clientA:長いランダム文字�
 npx wrangler deploy
 ```
 
-デプロイ後、`wrangler.jsonc` の `ALLOWED_ORIGINS` をGitHub PagesのURL（例 `https://xxxx.github.io`）に絞る。
+`wrangler.jsonc` の `ALLOWED_ORIGINS` は、フロントを配信するGitHub PagesのURL（`https://<ユーザー名>.github.io`）に絞ってある。
+オリジンが変わったらここを直して再デプロイする。
 音声合成の選び方は次節。
 
 ローカル開発は `cp .dev.vars.example .dev.vars` して値を埋め、`npm run dev`。
