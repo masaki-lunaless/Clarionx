@@ -514,6 +514,23 @@ const modeSummary = (m) => ({
   voice: m.voice,
 });
 
+/**
+ * 客のセリフに混じったト書きを落とす。
+ * プロンプトで禁止しているが完全には守られず、残ると音声でそのまま読み上げられてしまう。
+ */
+export function stripStageDirections(text) {
+  const cleaned = String(text || '')
+    .replace(/\*[^*]*\*/g, '')   // *両手でカウンターに置きながら*
+    .replace(/（[^）]*）/g, '')    // （うなずいて）
+    .replace(/\([^)]*\)/g, '')
+    .replace(/【[^】]*】/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  // 全部がト書きだった場合は元の文を返す（無音になるより読み上げたほうがまし）
+  return cleaned || String(text || '').trim();
+}
+
 /** 客役の1発話を作り、読み上げ音声まで用意する */
 async function speakAsCustomer(env, mode, history, { opening }) {
   const messages = history.map((m) => ({
@@ -522,7 +539,7 @@ async function speakAsCustomer(env, mode, history, { opening }) {
   }));
   if (opening) messages.push({ role: 'user', content: '（お客様が来店しました。あなたから最初の一言をどうぞ）' });
 
-  const replyText = await generateText(env, {
+  const raw = await generateText(env, {
     model: MODELS.chat,
     system: roleplaySystemPrompt({
       customerType: mode.customer_type,
@@ -530,9 +547,10 @@ async function speakAsCustomer(env, mode, history, { opening }) {
       criteria: mode.criteria_markdown,
     }),
     messages: messages.slice(-40),
-    maxTokens: 300,
+    maxTokens: 400,
     temperature: 1,
   });
+  const replyText = stripStageDirections(raw);
 
   const audioUrl = await synthesize(env, replyText, {
     voice: mode.voice || undefined,
