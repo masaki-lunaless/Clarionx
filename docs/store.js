@@ -1,71 +1,26 @@
-// 端末内（localStorage）に全データを保持する。
-// 顧客ごとにデータを分ける段階になったらWorker側にKV/D1を足して移す想定。
-const KEY = 'clarion.v1';
+// 端末に残すのは接続設定と実施者名だけ。
+// 案件・判断基準・モード・実施記録はすべてWorker側のD1にある。
+const KEY = 'clarion.settings.v2';
 
-const empty = () => ({
-  settings: { workerUrl: '', token: '', voice: '', vocabulary: '' },
-  sessions: [],
-  criteria: [],
-  activeCriteriaId: null,
-  runs: [],
-});
+const defaults = { workerUrl: '', token: '', voice: '', vocabulary: '', trainee: '' };
 
 function load() {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return empty();
-    return { ...empty(), ...JSON.parse(raw) };
+    return { ...defaults, ...JSON.parse(localStorage.getItem(KEY) || '{}') };
   } catch {
-    return empty();
+    return { ...defaults };
   }
 }
 
-export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const state = load();
 
-export const store = {
-  state: load(),
-  listeners: new Set(),
-  save() {
-    localStorage.setItem(KEY, JSON.stringify(this.state));
-    this.listeners.forEach((fn) => fn(this.state));
-  },
-  subscribe(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  },
-  reset() {
-    this.state = empty();
-    this.save();
-  },
-  export() {
-    return JSON.stringify(this.state, null, 2);
-  },
-  import(json) {
-    const data = JSON.parse(json);
-    this.state = { ...empty(), ...data };
-    this.save();
+export const settings = {
+  get: (key) => state[key],
+  all: () => ({ ...state }),
+  set(key, value) {
+    state[key] = value;
+    localStorage.setItem(KEY, JSON.stringify(state));
   },
 };
 
-/** 回答済みQ&Aだけを平坦化して取り出す（判断基準の統合に渡す形） */
-export function answeredQA(sessions) {
-  const out = [];
-  for (const s of sessions) {
-    for (const tp of s.turningPoints || []) {
-      for (const q of tp.questions || []) {
-        if ((q.answer || '').trim()) {
-          out.push({
-            sessionId: s.id,
-            sessionTitle: s.title,
-            tpId: tp.id,
-            id: q.id,
-            quote: tp.quote,
-            question: q.question,
-            answer: q.answer,
-          });
-        }
-      }
-    }
-  }
-  return out;
-}
+export const uid = () => Math.random().toString(36).slice(2, 10);

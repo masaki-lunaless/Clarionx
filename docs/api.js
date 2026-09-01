@@ -1,18 +1,19 @@
 // Worker（clarion-proxy）との通信。APIキーはここには存在しない。
-import { store } from './store.js';
+// データはすべてWorker側のD1にあり、この画面は状態を持たない。
+import { settings } from './store.js';
 
-class ClarionError extends Error {}
+export class ClarionError extends Error {}
 
 function base() {
-  const url = (store.state.settings.workerUrl || '').trim().replace(/\/$/, '');
+  const url = (settings.get('workerUrl') || '').trim().replace(/\/$/, '');
   if (!url) throw new ClarionError('設定タブでWorkerのURLを入れてください');
   return url;
 }
 
-function headers(extra = {}) {
-  const token = (store.state.settings.token || '').trim();
+const headers = (extra = {}) => {
+  const token = (settings.get('token') || '').trim();
   return { ...(token ? { 'x-clarion-token': token } : {}), ...extra };
-}
+};
 
 async function handle(res) {
   const data = await res.json().catch(() => ({}));
@@ -23,33 +24,50 @@ async function handle(res) {
   return data;
 }
 
-async function postJSON(path, body) {
-  const res = await fetch(base() + path, {
-    method: 'POST',
-    headers: headers({ 'content-type': 'application/json' }),
-    body: JSON.stringify(body),
-  });
-  return handle(res);
-}
+const request = (method, path, body) =>
+  fetch(base() + path, {
+    method,
+    headers: headers(body ? { 'content-type': 'application/json' } : {}),
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  }).then(handle);
 
-async function postForm(path, { audio, payload, filename }) {
+async function upload(path, { audio, payload, filename }) {
   const form = new FormData();
   if (audio) form.append('audio', audio, filename || 'audio.webm');
   form.append('payload', JSON.stringify(payload || {}));
-  const res = await fetch(base() + path, { method: 'POST', headers: headers(), body: form });
-  return handle(res);
+  return handle(await fetch(base() + path, { method: 'POST', headers: headers(), body: form }));
 }
 
 export const api = {
-  ClarionError,
-  config: async () => handle(await fetch(base() + '/api/config', { headers: headers() })),
-  health: async () => handle(await fetch(base() + '/api/health')),
-  stt: (audio, payload, filename) => postForm('/api/stt', { audio, payload, filename }),
-  questions: (transcript, context) => postJSON('/api/questions', { transcript, context }),
-  followUp: (question, answer, quote) => postJSON('/api/follow-up', { question, answer, quote }),
-  criteria: (qa, notes) => postJSON('/api/criteria', { qa, notes }),
-  turn: (payload, audio, filename) =>
-    audio ? postForm('/api/roleplay/turn', { audio, payload, filename }) : postJSON('/api/roleplay/turn', payload),
-  score: (history, criteria) => postJSON('/api/roleplay/score', { history, criteria }),
-  tts: (text, voice, customerType) => postJSON('/api/tts', { text, voice, customerType }),
+  config: () => request('GET', '/api/config'),
+
+  // 1. 蓄積
+  listCases: () => request('GET', '/api/cases'),
+  getCase: (id) => request('GET', `/api/cases/${id}`),
+  createCase: (data) => request('POST', '/api/cases', data),
+  updateCase: (id, data) => request('PATCH', `/api/cases/${id}`, data),
+  deleteCase: (id) => request('DELETE', `/api/cases/${id}`),
+  transcribe: (id, audio, payload, filename) => upload(`/api/cases/${id}/transcribe`, { audio, payload, filename }),
+  detect: (id) => request('POST', `/api/cases/${id}/detect`, {}),
+  saveAnswer: (questionId, answer) => request('PATCH', `/api/questions/${questionId}`, { answer }),
+  followUp: (questionId, data) => request('POST', `/api/questions/${questionId}/follow-up`, data),
+
+  // 3. 統合
+  listCriteria: () => request('GET', '/api/criteria'),
+  getCriteria: (id) => request('GET', `/api/criteria/${id}`),
+  mergeCriteria: (data) => request('POST', '/api/criteria', data),
+  updateCriteria: (id, markdown) => request('PATCH', `/api/criteria/${id}`, { markdown }),
+  deleteCriteria: (id) => request('DELETE', `/api/criteria/${id}`),
+  criteriaFeedback: (id) => request('GET', `/api/criteria/${id}/feedback`),
+
+  // 2. ロープレ
+  listModes: () => request('GET', '/api/modes'),
+  createMode: (data) => request('POST', '/api/modes', data),
+  deleteMode: (id) => request('DELETE', `/api/modes/${id}`),
+  listRuns: (criteriaId) => request('GET', `/api/runs${criteriaId ? `?criteriaId=${criteriaId}` : ''}`),
+  startRun: (modeId, trainee) => request('POST', '/api/runs', { modeId, trainee }),
+  turn: (runId, { text, audio, filename, payload }) =>
+    audio ? upload(`/api/runs/${runId}/turn`, { audio, payload, filename }) : request('POST', `/api/runs/${runId}/turn`, { text }),
+  score: (runId) => request('POST', `/api/runs/${runId}/score`, {}),
+  feedback: (runId, data) => request('PATCH', `/api/runs/${runId}/feedback`, data),
 };

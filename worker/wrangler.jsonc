@@ -6,6 +6,13 @@
   "observability": {
     "enabled": true
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clarion",
+      "database_id": "0a297b69-34b1-4e8f-8b30-afc59f6ae404"
+    }
+  ],
   "vars": {
     // ブラウザから叩けるオリジンを限定する。カンマ区切りで複数可。
     // ローカル開発時は "http://localhost:8123" などを一時的に足す。

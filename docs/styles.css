@@ -256,3 +256,40 @@ dialog {
 dialog::backdrop { background: rgba(0, 0, 0, .35); }
 dialog h2 { margin-bottom: 6px; }
 dialog .row { margin-top: 12px; }
+
+/* --------------------------- 3画面構成の追加分 --------------------------- */
+
+.list { list-style: none; margin: 0; padding: 0; }
+.item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+.item:hover { background: var(--surface-2); }
+.item.is-active { background: var(--surface-2); border-color: var(--accent); }
+.item-name { font-size: .9rem; }
+.item-meta { font-size: .74rem; color: var(--ink-2); }
+
+.check, .check-item { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; font-size: .84rem; padding: 6px 2px; }
+.check-item { border-bottom: 1px solid var(--line); }
+.check input, .check-item input { margin-top: 4px; width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+
+.sidebar-foot .btn { width: 100%; margin-top: 8px; }
+
+/* フィードバック */
+.feedback { margin-top: 16px; }
+.fb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 620px) { .fb-grid { grid-template-columns: 1fr; } }
+.fb-list h4 { margin-bottom: 4px; }
+.fb-row { border-top: 1px dashed var(--line); padding: 8px 0; }
+.fb-row p { margin: 4px 0 0; font-size: .86rem; }
+
+#run-mode-detail { display: block; }

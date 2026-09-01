@@ -1,5 +1,5 @@
-import { api } from './api.js';
-import { answeredQA, store, uid } from './store.js';
+import { api, ClarionError } from './api.js';
+import { settings } from './store.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -11,15 +11,16 @@ function status(el, message, kind = '') {
   el.className = `status ${kind}`;
 }
 
-function debounce(fn, ms = 400) {
+const debounce = (fn, ms = 500) => {
   let t;
   return (...args) => {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), ms);
   };
-}
+};
 
-async function withBusy(button, statusEl, message, task) {
+/** 実行中はボタンを止め、失敗したらstatusにだけ出す（画面は壊さない） */
+async function run(button, statusEl, message, task) {
   const label = button?.textContent;
   if (button) {
     button.disabled = true;
@@ -28,12 +29,11 @@ async function withBusy(button, statusEl, message, task) {
   status(statusEl, message);
   try {
     const result = await task();
-    // task内で完了メッセージを出した場合は消さない
     if (statusEl.textContent === message) status(statusEl, '');
     return result;
   } catch (err) {
-    status(statusEl, err.message || String(err), 'error');
-    throw err;
+    status(statusEl, err instanceof ClarionError ? err.message : String(err?.message || err), 'error');
+    return null;
   } finally {
     if (button) {
       button.disabled = false;
@@ -42,186 +42,192 @@ async function withBusy(button, statusEl, message, task) {
   }
 }
 
+/* -------------------------------- 全体状態 ------------------------------- */
+
+let config = { customerTypes: [], voices: [], feedbackOptions: { realism: [], scoring: [] }, admin: true };
+let cases = [];
+let criteriaList = [];
+let modes = [];
+let current = { caseId: null, case: null, modeId: null, run: null, criteriaId: null };
+
 /* ---------------------------------- タブ --------------------------------- */
 
 $$('.tab').forEach((tab) =>
-  tab.addEventListener('click', () => {
+  tab.addEventListener('click', async () => {
     $$('.tab').forEach((t) => t.classList.toggle('is-active', t === tab));
     $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${tab.dataset.tab}`));
-    if (tab.dataset.tab === 'criteria') renderQAList();
-    if (tab.dataset.tab === 'practice') renderPracticeConfig();
+    if (tab.dataset.tab === 'practice') await refreshModes();
+    if (tab.dataset.tab === 'merge') await refreshMerge();
   }),
 );
 
 /* --------------------------------- 設定 ---------------------------------- */
 
-const settingsFields = {
-  workerUrl: $('#worker-url'),
-  token: $('#access-token'),
-  vocabulary: $('#vocabulary'),
-};
-
-for (const [key, input] of Object.entries(settingsFields)) {
-  input.value = store.state.settings[key] || '';
-  input.addEventListener('input', () => {
-    store.state.settings[key] = input.value;
-    store.save();
-  });
+for (const [key, sel] of Object.entries({ workerUrl: '#worker-url', token: '#access-token', vocabulary: '#vocabulary', trainee: '#trainee' })) {
+  const input = $(sel);
+  input.value = settings.get(key) || '';
+  input.addEventListener('input', () => settings.set(key, input.value));
 }
 
 $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
-  await withBusy(e.target, el, '接続中…', async () => {
-    const cfg = await api.config();
-    applyConfig(cfg);
-    status(
-      el,
-      `接続OK — 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${voices.length ? `（声${voices.length}種）` : ''}`,
-      'ok',
-    );
-  }).catch(() => {});
+  const cfg = await run(e.target, el, '接続中…', () => api.config());
+  if (!cfg) return;
+  applyConfig(cfg);
+  status(el, `接続OK — ${cfg.client} / 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${cfg.admin ? ' / 管理者' : ''}`, 'ok');
+  await refreshAll();
 });
 
-$('#export-data').addEventListener('click', () => {
-  download('clarion-backup.json', store.export(), 'application/json');
-});
-
-$('#import-data').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  try {
-    store.import(await file.text());
-    location.reload();
-  } catch (err) {
-    status($('#settings-status'), `読み込み失敗：${err.message}`, 'error');
-  }
-});
-
-$('#reset-data').addEventListener('click', () => {
-  if (confirm('この端末に保存されたClarionのデータをすべて消します。よろしいですか？')) {
-    store.reset();
-    location.reload();
-  }
-});
-
-function download(filename, text, type = 'text/plain') {
-  const url = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+function applyConfig(cfg) {
+  config = { ...config, ...cfg };
+  const fill = (el, options, selected) => {
+    el.innerHTML = options.map((o) => `<option value="${esc(o.value ?? o.id)}" ${(o.value ?? o.id) === selected ? 'selected' : ''}>${esc(o.label ?? o.name)}</option>`).join('');
+  };
+  fill($('#fb-realism'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.realism]);
+  fill($('#fb-scoring'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.scoring]);
+  fill($('#mode-customer'), config.customerTypes);
+  fill($('#mode-voice'), [{ value: '', label: 'Worker既定の声' }, ...config.voices]);
 }
 
-/* --------------------------- ① 「なぜ」を聞く ---------------------------- */
+/* -------------------------------- ① 蓄積 -------------------------------- */
 
-let currentSessionId = store.state.sessions[0]?.id || null;
+async function refreshCases() {
+  const data = await api.listCases().catch(() => null);
+  if (!data) return;
+  cases = data.cases;
+  renderCaseList();
+  renderMergeCaseList();
+}
 
-const currentSession = () => store.state.sessions.find((s) => s.id === currentSessionId) || null;
-
-function renderSessionList() {
-  const list = $('#session-list');
-  list.innerHTML = store.state.sessions
-    .map((s) => {
-      const total = (s.turningPoints || []).reduce((n, tp) => n + tp.questions.length, 0);
-      const done = (s.turningPoints || []).reduce(
-        (n, tp) => n + tp.questions.filter((q) => (q.answer || '').trim()).length,
-        0,
-      );
-      return `<li><button class="session-item ${s.id === currentSessionId ? 'is-active' : ''}" data-id="${s.id}">
-        <span class="session-name">${esc(s.title || '（無題）')}</span>
-        <span class="session-meta">${total ? `${done}/${total} 回答` : '未検出'}</span>
-      </button></li>`;
-    })
+function renderCaseList() {
+  $('#case-list').innerHTML = cases
+    .map(
+      (c) => `<li><button class="item ${c.id === current.caseId ? 'is-active' : ''}" data-id="${c.id}">
+        <span class="item-name">${esc(c.title)}</span>
+        <span class="item-meta">${esc(c.ace_name || '担当者未記入')}・${c.q_total ? `${c.q_answered}/${c.q_total} 回答` : '未検出'}</span>
+      </button></li>`,
+    )
     .join('');
 }
 
-$('#session-list').addEventListener('click', (e) => {
-  const btn = e.target.closest('.session-item');
-  if (!btn) return;
-  currentSessionId = btn.dataset.id;
-  renderSessionList();
-  renderSessionDetail();
+$('#case-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.item');
+  if (btn) await openCase(btn.dataset.id);
 });
 
-$('#new-session').addEventListener('click', () => {
-  const session = {
-    id: uid(),
-    title: `セッション ${store.state.sessions.length + 1}`,
-    createdAt: new Date().toISOString(),
-    context: '',
-    transcript: '',
-    turningPoints: [],
-  };
-  store.state.sessions.unshift(session);
-  currentSessionId = session.id;
-  store.save();
-  renderSessionList();
-  renderSessionDetail();
-  $('#session-title').focus();
-});
+async function openCase(id) {
+  const data = await api.getCase(id).catch(() => null);
+  if (!data) return;
+  current.caseId = id;
+  current.case = data.case;
+  renderCaseList();
+  renderCase();
+}
 
-$('#delete-session').addEventListener('click', () => {
-  const s = currentSession();
-  if (!s || !confirm(`「${s.title}」を削除します。よろしいですか？`)) return;
-  store.state.sessions = store.state.sessions.filter((x) => x.id !== s.id);
-  currentSessionId = store.state.sessions[0]?.id || null;
-  store.save();
-  renderSessionList();
-  renderSessionDetail();
-});
-
-const saveSessionField = debounce((field, value) => {
-  const s = currentSession();
-  if (!s) return;
-  s[field] = value;
-  store.save();
-  if (field === 'title') renderSessionList();
-});
-
-$('#session-title').addEventListener('input', (e) => saveSessionField('title', e.target.value));
-$('#session-context').addEventListener('input', (e) => saveSessionField('context', e.target.value));
-$('#session-transcript').addEventListener('input', (e) => saveSessionField('transcript', e.target.value));
-
-function renderSessionDetail() {
-  const s = currentSession();
-  $('#session-empty').hidden = Boolean(s);
-  $('#session-body').hidden = !s;
-  if (!s) return;
-  $('#session-title').value = s.title || '';
-  $('#session-context').value = s.context || '';
-  $('#session-transcript').value = s.transcript || '';
+function renderCase() {
+  const c = current.case;
+  $('#case-empty').hidden = Boolean(c);
+  $('#case-body').hidden = !c;
+  if (!c) return;
+  $('#case-title').value = c.title || '';
+  $('#case-ace').value = c.ace_name || '';
+  $('#case-date').value = c.occurred_on || '';
+  $('#case-context').value = c.context || '';
+  $('#case-transcript').value = c.transcript || '';
   renderTurningPoints();
 }
 
-function renderTurningPoints() {
-  const s = currentSession();
-  const root = $('#turning-points');
-  if (!s || !(s.turningPoints || []).length) {
-    root.innerHTML = '';
+$('#new-case').addEventListener('click', async () => {
+  const data = await run(null, $('#capture-status'), '作成中…', () =>
+    api.createCase({ title: `案件 ${cases.length + 1}`, transcript: '' }),
+  );
+  if (!data) return;
+  await refreshCases();
+  await openCase(data.case.id);
+  $('#case-title').select();
+});
+
+$('#delete-case').addEventListener('click', async () => {
+  if (!confirm(`「${current.case.title}」を削除します。転換点と回答も消えます。よろしいですか？`)) return;
+  if (!(await run(null, $('#capture-status'), '削除中…', () => api.deleteCase(current.caseId)))) return;
+  current.caseId = null;
+  current.case = null;
+  await refreshCases();
+  renderCase();
+});
+
+const saveCaseField = debounce(async (field, value) => {
+  if (!current.caseId) return;
+  await api.updateCase(current.caseId, { [field]: value }).catch(() => {});
+  const row = cases.find((c) => c.id === current.caseId);
+  if (row) {
+    if (field === 'title') row.title = value;
+    if (field === 'aceName') row.ace_name = value;
+    renderCaseList();
+  }
+});
+
+const bindCaseField = (sel, field) => {
+  const el = $(sel);
+  const save = () => saveCaseField(field, el.value);
+  el.addEventListener('input', save);
+  el.addEventListener('change', () => {
+    if (current.case) current.case[field === 'aceName' ? 'ace_name' : field === 'occurredOn' ? 'occurred_on' : field] = el.value;
+    save();
+  });
+};
+bindCaseField('#case-title', 'title');
+bindCaseField('#case-ace', 'aceName');
+bindCaseField('#case-date', 'occurredOn');
+bindCaseField('#case-context', 'context');
+bindCaseField('#case-transcript', 'transcript');
+
+$('#audio-file').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file || !current.caseId) return;
+  const data = await run(null, $('#capture-status'), `${file.name} を書き起こし中…（長い音声は数分かかります）`, () =>
+    api.transcribe(current.caseId, file, { vocabulary: settings.get('vocabulary') }, file.name),
+  );
+  if (!data) return;
+  current.case = data.case;
+  $('#case-transcript').value = data.case.transcript;
+});
+
+$('#detect-btn').addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
     return;
   }
-  root.innerHTML = s.turningPoints
+  // 未保存の編集を確定させてから検出する
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '転換点を検出中…（30秒ほどかかります）', () => api.detect(current.caseId));
+  if (!data) return;
+  current.case = data.case;
+  renderTurningPoints();
+  await refreshCases();
+});
+
+function renderTurningPoints() {
+  const tps = current.case?.turningPoints || [];
+  $('#turning-points').innerHTML = tps
     .map(
       (tp, i) => `
-    <article class="card" data-tp="${tp.id}">
-      <header class="card-head">
-        <span class="badge">転換点 ${i + 1}</span>
-        <h3>${esc(tp.label)}</h3>
-      </header>
+    <article class="card">
+      <header class="card-head"><span class="badge">転換点 ${i + 1}</span><h3>${esc(tp.label)}</h3></header>
       <blockquote>${esc(tp.quote)}</blockquote>
       <p class="why">${esc(tp.why)}</p>
       ${tp.questions
         .map(
-          (q) => `
-        <div class="qa" data-q="${q.id}">
-          <p class="question">${esc(q.question)}</p>
-          <textarea class="input answer" data-q="${q.id}" rows="3" placeholder="本人の回答をそのまま書き取る">${esc(q.answer || '')}</textarea>
-          <div class="row row-end">
-            <span class="status inline" data-status="${q.id}"></span>
-            <button class="btn btn-ghost btn-sm dig" data-q="${q.id}">もう一段掘る</button>
-          </div>
-        </div>`,
+          (q) => `<div class="qa">
+            <p class="question">${esc(q.question)}</p>
+            <textarea class="input answer" data-q="${q.id}" rows="3" placeholder="本人の回答をそのまま書き取る">${esc(q.answer || '')}</textarea>
+            <div class="row row-end">
+              <span class="status inline" data-status="${q.id}"></span>
+              <button class="btn btn-ghost btn-sm dig" data-q="${q.id}" data-quote="${esc(tp.quote)}">もう一段掘る</button>
+            </div>
+          </div>`,
         )
         .join('')}
     </article>`,
@@ -229,388 +235,116 @@ function renderTurningPoints() {
     .join('');
 }
 
-function saveAnswer(e) {
-  const ta = e.target.closest('textarea.answer');
-  if (!ta) return;
-  const s = currentSession();
-  for (const tp of s.turningPoints) {
-    const q = tp.questions.find((x) => x.id === ta.dataset.q);
-    if (q) {
-      q.answer = ta.value;
-      store.save();
-      renderSessionList();
-      return;
-    }
-  }
-}
+const saveAnswer = debounce(async (id, value) => {
+  await api.saveAnswer(id, value).catch(() => {});
+  await refreshCases();
+});
 
-$('#turning-points').addEventListener('input', debounce(saveAnswer, 500));
-$('#turning-points').addEventListener('change', saveAnswer); // blur時に取りこぼさない
+$('#turning-points').addEventListener('input', (e) => {
+  const ta = e.target.closest('textarea.answer');
+  if (ta) saveAnswer(ta.dataset.q, ta.value);
+});
 
 $('#turning-points').addEventListener('click', async (e) => {
   const btn = e.target.closest('.dig');
   if (!btn) return;
-  const s = currentSession();
-  const qid = btn.dataset.q;
-  const tp = s.turningPoints.find((t) => t.questions.some((q) => q.id === qid));
-  const q = tp.questions.find((x) => x.id === qid);
-  const statusEl = $(`[data-status="${qid}"]`, $('#turning-points'));
-  const answer = $(`textarea.answer[data-q="${qid}"]`).value.trim();
-  if (!answer) {
+  const id = btn.dataset.q;
+  const statusEl = $(`[data-status="${id}"]`);
+  const ta = $(`textarea.answer[data-q="${id}"]`);
+  const question = ta.closest('.qa').querySelector('.question').textContent;
+  if (!ta.value.trim()) {
     status(statusEl, '先に回答を書いてください', 'error');
     return;
   }
-  await withBusy(btn, statusEl, '追加質問を作成中…', async () => {
-    const out = await api.followUp(q.question, answer, tp.quote);
-    if (out.enough || !(out.questions || []).length) {
-      status(statusEl, `十分に言語化できています（${out.reason || ''}）`, 'ok');
-      return;
-    }
-    q.answer = answer;
-    const idx = tp.questions.indexOf(q);
-    tp.questions.splice(idx + 1, 0, ...out.questions.map((text) => ({ id: uid(), question: text, answer: '' })));
-    store.save();
-    renderTurningPoints();
-  }).catch(() => {});
-});
-
-function syncSessionFields() {
-  const s = currentSession();
-  if (!s) return null;
-  s.title = $('#session-title').value;
-  s.context = $('#session-context').value;
-  s.transcript = $('#session-transcript').value;
-  store.save();
-  return s;
-}
-
-$('#detect-btn').addEventListener('click', async (e) => {
-  const s = syncSessionFields();
-  const statusEl = $('#interview-status');
-  if (!s || !(s.transcript || '').trim()) {
-    status(statusEl, '書き起こしを入れてください', 'error');
+  const out = await run(btn, statusEl, '追加質問を作成中…', () =>
+    api.followUp(id, { question, answer: ta.value.trim(), quote: btn.dataset.quote }),
+  );
+  if (!out) return;
+  if (out.enough) {
+    status(statusEl, `十分に言語化できています（${out.reason}）`, 'ok');
     return;
   }
-  await withBusy(e.target, statusEl, '転換点を検出中…（30秒ほどかかります）', async () => {
-    const { turningPoints } = await api.questions(s.transcript, s.context);
-    const incoming = turningPoints.map((tp) => ({
-      id: uid(),
-      label: tp.label,
-      quote: tp.quote,
-      why: tp.why,
-      questions: (tp.questions || []).map((text) => ({ id: uid(), question: text, answer: '' })),
-    }));
-    // 既存の回答は消さない。検出のたびに追記していく
-    s.turningPoints = [...(s.turningPoints || []), ...incoming];
-    store.save();
-    renderTurningPoints();
-    renderSessionList();
-  }).catch(() => {});
+  await openCase(current.caseId);
 });
 
-$('#audio-file').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
-  const s = syncSessionFields();
-  const statusEl = $('#interview-status');
-  if (!s) return;
-  await withBusy(null, statusEl, `${file.name} を書き起こし中…（長い音声は数分かかります）`, async () => {
-    const { transcript } = await api.stt(file, { vocabulary: store.state.settings.vocabulary }, file.name);
-    s.transcript = [s.transcript, transcript].filter(Boolean).join('\n');
-    store.save();
-    $('#session-transcript').value = s.transcript;
-  }).catch(() => {});
-});
+/* ------------------------------ ② ロープレ ------------------------------ */
 
-/* 一括インポート */
-$('#bulk-import').addEventListener('click', () => $('#bulk-dialog').showModal());
-$('#bulk-dialog').addEventListener('close', () => {
-  if ($('#bulk-dialog').returnValue !== 'ok') return;
-  const raw = $('#bulk-json').value.trim();
-  if (!raw) return;
-  try {
-    const items = JSON.parse(raw);
-    if (!Array.isArray(items)) throw new Error('配列で渡してください');
-    for (const item of items) {
-      store.state.sessions.unshift({
-        id: uid(),
-        title: item.title || `インポート ${new Date().toLocaleDateString('ja-JP')}`,
-        createdAt: new Date().toISOString(),
-        context: item.context || '',
-        transcript: item.text || item.transcript || '',
-        turningPoints: (item.qa || []).length
-          ? [
-              {
-                id: uid(),
-                label: 'インポート',
-                quote: item.quote || '',
-                why: '外部から取り込んだQ&A',
-                questions: item.qa.map((q) => ({ id: uid(), question: q.question, answer: q.answer || '' })),
-              },
-            ]
-          : [],
-      });
-    }
-    store.save();
-    $('#bulk-json').value = '';
-    currentSessionId = store.state.sessions[0].id;
-    renderSessionList();
-    renderSessionDetail();
-  } catch (err) {
-    alert(`インポート失敗：${err.message}`);
-  }
-});
-
-/* --------------------------- ② 判断基準にする ---------------------------- */
-
-let selectedQA = new Set();
-
-function renderQAList() {
-  const items = answeredQA(store.state.sessions);
-  const list = $('#qa-list');
-  if (!items.length) {
-    list.innerHTML = '<li class="empty-note">回答済みのQ&amp;Aがまだありません。①で質問に回答してください。</li>';
-    return;
-  }
-  if (selectedQA.size === 0) items.forEach((i) => selectedQA.add(i.id));
-  list.innerHTML = items
-    .map(
-      (item) => `<li><label class="qa-item">
-        <input type="checkbox" data-qa="${item.id}" ${selectedQA.has(item.id) ? 'checked' : ''}>
-        <span>
-          <span class="qa-session">${esc(item.sessionTitle || '')}</span>
-          <span class="qa-q">${esc(item.question)}</span>
-        </span>
-      </label></li>`,
-    )
-    .join('');
+async function refreshModes() {
+  const data = await api.listModes().catch(() => null);
+  if (!data) return;
+  modes = data.modes;
+  renderModeList();
 }
 
-$('#qa-list').addEventListener('change', (e) => {
-  const cb = e.target.closest('input[data-qa]');
-  if (!cb) return;
-  cb.checked ? selectedQA.add(cb.dataset.qa) : selectedQA.delete(cb.dataset.qa);
-});
-
-$('#qa-toggle-all').addEventListener('click', () => {
-  const items = answeredQA(store.state.sessions);
-  const allOn = items.every((i) => selectedQA.has(i.id));
-  selectedQA = allOn ? new Set() : new Set(items.map((i) => i.id));
-  renderQAList();
-});
-
-$('#synthesize-btn').addEventListener('click', async (e) => {
-  const statusEl = $('#criteria-status');
-  const qa = answeredQA(store.state.sessions).filter((i) => selectedQA.has(i.id));
-  if (!qa.length) {
-    status(statusEl, 'Q&Aを1件以上選んでください', 'error');
-    return;
-  }
-  await withBusy(e.target, statusEl, `${qa.length}件を統合中…（1分ほどかかります）`, async () => {
-    const { markdown, document: doc } = await api.criteria(
-      qa.map(({ question, answer, quote }) => ({ question, answer, quote })),
-      $('#criteria-notes').value,
-    );
-    const record = {
-      id: uid(),
-      title: doc.title || '判断基準ドキュメント',
-      createdAt: new Date().toISOString(),
-      markdown,
-      sourceCount: qa.length,
-    };
-    store.state.criteria.unshift(record);
-    store.state.activeCriteriaId = record.id;
-    store.save();
-    renderCriteria();
-  }).catch(() => {});
-});
-
-function activeCriteria() {
-  return store.state.criteria.find((c) => c.id === store.state.activeCriteriaId) || null;
-}
-
-function renderCriteria() {
-  const select = $('#criteria-select');
-  select.innerHTML = store.state.criteria.length
-    ? store.state.criteria
+function renderModeList() {
+  $('#mode-list').innerHTML = modes.length
+    ? modes
         .map(
-          (c) =>
-            `<option value="${c.id}" ${c.id === store.state.activeCriteriaId ? 'selected' : ''}>${esc(c.title)}（${new Date(c.createdAt).toLocaleDateString('ja-JP')}／${c.sourceCount || 0}件）</option>`,
+          (m) => `<li><button class="item ${m.id === current.modeId ? 'is-active' : ''}" data-id="${m.id}">
+            <span class="item-name">${esc(m.name)}</span>
+            <span class="item-meta">${esc(m.criteria_title)}・実施${m.run_count}回</span>
+          </button></li>`,
         )
         .join('')
-    : '<option value="">まだありません</option>';
-  $('#criteria-doc').value = activeCriteria()?.markdown || '';
-  renderPracticeConfig();
+    : '<li class="empty-note">③でモードを作ってください</li>';
 }
 
-$('#criteria-select').addEventListener('change', (e) => {
-  store.state.activeCriteriaId = e.target.value || null;
-  store.save();
-  renderCriteria();
+$('#mode-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.item');
+  if (!btn) return;
+  current.modeId = btn.dataset.id;
+  const mode = modes.find((m) => m.id === current.modeId);
+  renderModeList();
+  $('#practice-empty').hidden = true;
+  $('#practice-body').hidden = false;
+  $('#run-mode-name').textContent = mode.name;
+  $('#run-mode-detail').textContent = `${config.customerTypes.find((t) => t.id === mode.customer_type)?.label || mode.customer_type}${mode.scenario ? ` ／ ${mode.scenario}` : ''}`;
+  $('#convo').innerHTML = '';
+  $('#score-result').innerHTML = '';
+  $('#feedback-box').hidden = true;
+  setPractice(false);
 });
 
-function saveCriteriaDoc(e) {
-  const c = activeCriteria();
-  if (!c) return;
-  c.markdown = e.target.value;
-  store.save();
-}
+$('#new-mode').addEventListener('click', () => openModeDialog());
 
-$('#criteria-doc').addEventListener('input', debounce(saveCriteriaDoc, 500));
-$('#criteria-doc').addEventListener('change', saveCriteriaDoc);
-
-$('#criteria-copy').addEventListener('click', async () => {
-  const c = activeCriteria();
-  if (!c) return;
-  await navigator.clipboard.writeText(c.markdown);
-  status($('#criteria-status'), 'コピーしました', 'ok');
-});
-
-$('#criteria-download').addEventListener('click', () => {
-  const c = activeCriteria();
-  if (c) download(`${c.title || 'criteria'}.md`, c.markdown, 'text/markdown');
-});
-
-$('#criteria-delete').addEventListener('click', () => {
-  const c = activeCriteria();
-  if (!c || !confirm(`「${c.title}」を削除します。よろしいですか？`)) return;
-  store.state.criteria = store.state.criteria.filter((x) => x.id !== c.id);
-  store.state.activeCriteriaId = store.state.criteria[0]?.id || null;
-  store.save();
-  renderCriteria();
-});
-
-/* ------------------------------ ③ 練習する ------------------------------- */
-
-let customerTypes = [
-  { id: 'undecided', label: '迷い客' },
-  { id: 'price', label: '価格重視' },
-  { id: 'silent', label: '寡黙' },
-  { id: 'expert', label: '知識豊富' },
-  { id: 'complaint', label: '不満・クレーム気味' },
-  { id: 'kaitori', label: '買取相談' },
-  { id: 'accompanied', label: '同伴者あり' },
-];
-let voices = [];
-let run = null; // { criteriaId, customerType, scenario, history: [] }
-
-function applyConfig(cfg) {
-  voices = cfg.voices || [];
-  customerTypes = cfg.customerTypes || customerTypes;
-  renderPracticeConfig();
-}
-
-function renderPracticeConfig() {
-  const cSel = $('#practice-criteria');
-  cSel.innerHTML = store.state.criteria.length
-    ? store.state.criteria
-        .map((c) => `<option value="${c.id}" ${c.id === store.state.activeCriteriaId ? 'selected' : ''}>${esc(c.title)}</option>`)
-        .join('')
-    : '<option value="">②で判断基準を作ってください</option>';
-
-  const tSel = $('#customer-type');
-  const keep = tSel.value;
-  tSel.innerHTML = customerTypes.map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join('');
-  if (keep) tSel.value = keep;
-
-  const vSel = $('#voice-actor');
-  const keepVoice = store.state.settings.voice;
-  vSel.innerHTML = [
-    '<option value="">Worker既定の声</option>',
-    ...voices.map((v) => `<option value="${v.id}" ${v.id === keepVoice ? 'selected' : ''}>${esc(v.name)}</option>`),
-  ].join('');
-
-  $('#practice-hint').textContent = store.state.criteria.length
-    ? '録音ボタンを押して話し、もう一度押すと客が返します。'
-    : '判断基準がなくても練習はできますが、採点には②のドキュメントが必要です。';
-}
-
-$('#voice-actor').addEventListener('change', (e) => {
-  store.state.settings.voice = e.target.value;
-  store.save();
-});
-
-function criteriaText() {
-  const id = $('#practice-criteria').value;
-  return store.state.criteria.find((c) => c.id === id)?.markdown || '';
-}
-
-function renderConvo() {
-  const root = $('#convo');
-  root.innerHTML = (run?.history || [])
-    .map(
-      (m) =>
-        `<div class="bubble ${m.role}"><span class="who">${m.role === 'trainee' ? 'あなた' : 'お客様'}</span><p>${esc(m.text)}</p></div>`,
-    )
-    .join('');
-  root.scrollTop = root.scrollHeight;
-}
-
-function setPracticeEnabled(on) {
+function setPractice(on) {
   $('#record-btn').disabled = !on;
   $('#text-input').disabled = !on;
   $('#send-text').disabled = !on;
-  $('#score-run').disabled = !on || !(run?.history || []).length;
+  $('#score-run').disabled = !on;
 }
 
 $('#start-run').addEventListener('click', async (e) => {
-  run = {
-    id: uid(),
-    criteriaId: $('#practice-criteria').value,
-    customerType: $('#customer-type').value,
-    scenario: $('#scenario').value,
-    history: [],
-    createdAt: new Date().toISOString(),
-  };
-  $('#score-result').innerHTML = '';
-  renderConvo();
-  setPracticeEnabled(true);
   unlockAudio();
-  await withBusy(e.target, $('#practice-status'), 'お客様が来店中…', async () => {
-    const out = await api.turn({
-      opening: true,
-      history: [],
-      criteria: criteriaText(),
-      customerType: run.customerType,
-      scenario: run.scenario,
-      voice: store.state.settings.voice || undefined,
-    });
-    pushCustomer(out);
-  }).catch(() => {});
+  $('#convo').innerHTML = '';
+  $('#score-result').innerHTML = '';
+  $('#feedback-box').hidden = true;
+  const out = await run(e.target, $('#practice-status'), 'お客様が来店中…', () =>
+    api.startRun(current.modeId, settings.get('trainee')),
+  );
+  if (!out) return;
+  current.run = out.runId;
+  renderConvo(out.history);
+  play(out.replyText, out.audioUrl);
+  setPractice(true);
 });
 
-function pushCustomer(out) {
-  run.history.push({ role: 'customer', text: out.replyText });
-  renderConvo();
-  play(out.replyText, out.audioUrl);
-  $('#score-run').disabled = false;
+function renderConvo(history) {
+  $('#convo').innerHTML = history
+    .map(
+      (m) => `<div class="bubble ${m.role}"><span class="who">${m.role === 'trainee' ? 'あなた' : 'お客様'}</span><p>${esc(m.text)}</p></div>`,
+    )
+    .join('');
+  $('#convo').scrollTop = $('#convo').scrollHeight;
 }
 
-async function sendTurn({ audio, filename, text }) {
+async function sendTurn(payload) {
   const statusEl = $('#practice-status');
-  // 今回の発話はhistoryではなくtext/audioとして送るので、送信前の履歴を控えておく
-  const history = run.history.map((m) => ({ role: m.role, text: m.text }));
-  if (text) {
-    run.history.push({ role: 'trainee', text });
-    renderConvo();
-  }
-  status(statusEl, audio ? '聞き取り中…お客様が考えています' : 'お客様が考えています…');
+  status(statusEl, payload.audio ? '聞き取り中…お客様が考えています' : 'お客様が考えています…');
   try {
-    const payload = {
-      text,
-      history,
-      criteria: criteriaText(),
-      customerType: run.customerType,
-      scenario: run.scenario,
-      vocabulary: store.state.settings.vocabulary,
-      voice: store.state.settings.voice || undefined,
-    };
-    const out = await api.turn(payload, audio, filename);
-    if (!text && out.transcript) {
-      run.history.push({ role: 'trainee', text: out.transcript });
-    }
-    pushCustomer(out);
+    const out = await api.turn(current.run, payload);
+    renderConvo(out.history);
+    play(out.replyText, out.audioUrl);
     status(statusEl, '');
   } catch (err) {
     status(statusEl, err.message, 'error');
@@ -625,25 +359,17 @@ $('#send-text').addEventListener('click', () => {
   unlockAudio();
   sendTurn({ text });
 });
-
-$('#text-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') $('#send-text').click();
-});
+$('#text-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('#send-text').click());
 
 $('#score-run').addEventListener('click', async (e) => {
-  const criteria = criteriaText();
-  const statusEl = $('#practice-status');
-  if (!criteria) {
-    status(statusEl, '採点には②の判断基準ドキュメントが必要です', 'error');
-    return;
-  }
-  await withBusy(e.target, statusEl, '採点中…', async () => {
-    const score = await api.score(run.history, criteria);
-    run.score = score;
-    store.state.runs.unshift(run);
-    store.save();
-    renderScore(score);
-  }).catch(() => {});
+  const out = await run(e.target, $('#practice-status'), '採点中…（1分ほどかかります）', () => api.score(current.run));
+  if (!out) return;
+  renderScore(out.score);
+  $('#feedback-box').hidden = false;
+  $('#fb-note').value = '';
+  $('#fb-realism').value = '';
+  $('#fb-scoring').value = '';
+  status($('#fb-status'), '');
 });
 
 function renderScore(s) {
@@ -666,26 +392,200 @@ function renderScore(s) {
     </div>`;
 }
 
-/* ------------------------------ 録音・再生 ------------------------------- */
+$('#fb-save').addEventListener('click', async (e) => {
+  const ok = await run(e.target, $('#fb-status'), '送信中…', () =>
+    api.feedback(current.run, {
+      realism: $('#fb-realism').value || undefined,
+      scoring: $('#fb-scoring').value || undefined,
+      note: $('#fb-note').value,
+    }),
+  );
+  if (ok) status($('#fb-status'), '送りました。③の統合で反映されます', 'ok');
+});
+
+/* -------------------------------- ③ 統合 -------------------------------- */
+
+let mergeSelection = new Set();
+
+async function refreshMerge() {
+  await Promise.all([refreshCases(), refreshCriteria()]);
+}
+
+async function refreshCriteria() {
+  const data = await api.listCriteria().catch(() => null);
+  if (!data) return;
+  criteriaList = data.criteria;
+  renderCriteriaSelect();
+}
+
+function renderMergeCaseList() {
+  const usable = cases.filter((c) => c.q_answered > 0);
+  $('#merge-case-list').innerHTML = usable.length
+    ? usable
+        .map(
+          (c) => `<li><label class="check-item">
+            <input type="checkbox" data-case="${c.id}" ${mergeSelection.has(c.id) ? 'checked' : ''}>
+            <span><span class="item-name">${esc(c.title)}</span>
+            <span class="item-meta">${esc(c.ace_name || '担当者未記入')}・回答${c.q_answered}件</span></span>
+          </label></li>`,
+        )
+        .join('')
+    : '<li class="empty-note">①で回答を書き込んだ案件がここに出ます</li>';
+}
+
+$('#merge-case-list').addEventListener('change', (e) => {
+  const cb = e.target.closest('input[data-case]');
+  if (!cb) return;
+  cb.checked ? mergeSelection.add(cb.dataset.case) : mergeSelection.delete(cb.dataset.case);
+});
+
+$('#merge-toggle-all').addEventListener('click', () => {
+  const usable = cases.filter((c) => c.q_answered > 0);
+  mergeSelection = usable.every((c) => mergeSelection.has(c.id)) ? new Set() : new Set(usable.map((c) => c.id));
+  renderMergeCaseList();
+});
+
+$('#merge-btn').addEventListener('click', async (e) => {
+  const el = $('#merge-status');
+  if (!mergeSelection.size) {
+    status(el, '案件を1件以上選んでください', 'error');
+    return;
+  }
+  const feedbackCriteriaIds = $('#use-feedback').checked ? criteriaList.map((c) => c.id) : [];
+  const out = await run(e.target, el, `${mergeSelection.size}件を統合中…（1分ほどかかります）`, () =>
+    api.mergeCriteria({ caseIds: [...mergeSelection], notes: $('#merge-notes').value, feedbackCriteriaIds }),
+  );
+  if (!out) return;
+  status(el, out.usedFeedback ? `統合しました（フィードバック${out.usedFeedback}件を反映）` : '統合しました', 'ok');
+  await refreshCriteria();
+  current.criteriaId = out.criteria.id;
+  renderCriteriaSelect();
+  await showCriteria(out.criteria.id);
+});
+
+function renderCriteriaSelect() {
+  const sel = $('#criteria-select');
+  sel.innerHTML = criteriaList.length
+    ? criteriaList
+        .map(
+          (c) => `<option value="${c.id}" ${c.id === current.criteriaId ? 'selected' : ''}>${esc(c.title)}（案件${c.source_case_ids.length}件／実施${c.run_count}回）</option>`,
+        )
+        .join('')
+    : '<option value="">まだありません</option>';
+  const modeSel = $('#mode-criteria');
+  modeSel.innerHTML = criteriaList.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join('');
+}
+
+$('#criteria-select').addEventListener('change', (e) => e.target.value && showCriteria(e.target.value));
+
+async function showCriteria(id) {
+  const data = await api.getCriteria(id).catch(() => null);
+  if (!data) return;
+  current.criteriaId = id;
+  $('#criteria-doc').value = data.criteria.markdown;
+  const fb = await api.criteriaFeedback(id).catch(() => ({ feedback: [] }));
+  renderCriteriaFeedback(fb.feedback);
+}
+
+function renderCriteriaFeedback(list) {
+  const box = $('#criteria-feedback');
+  if (!list.length) {
+    box.innerHTML = '';
+    return;
+  }
+  const label = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value === v)?.label || '未評価';
+  box.innerHTML = `<div class="card fb-list">
+    <h4>この判断基準へのフィードバック（${list.length}件）</h4>
+    <p class="hint">次の統合で、これらが判断基準の書き直しに反映されます。</p>
+    ${list
+      .map(
+        (f) => `<div class="fb-row">
+          <span class="item-meta">${esc(f.mode_name || 'モード不明')}・客:${esc(label('realism', f.fb_realism))}・採点:${esc(label('scoring', f.fb_scoring))}</span>
+          ${f.fb_note ? `<p>${esc(f.fb_note)}</p>` : ''}
+        </div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
+$('#criteria-doc').addEventListener(
+  'input',
+  debounce((e) => {
+    if (current.criteriaId) api.updateCriteria(current.criteriaId, e.target.value).catch(() => {});
+  }),
+);
+
+$('#criteria-download').addEventListener('click', () => {
+  const c = criteriaList.find((x) => x.id === current.criteriaId);
+  if (!c) return;
+  const url = URL.createObjectURL(new Blob([$('#criteria-doc').value], { type: 'text/markdown;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${c.title}.md`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+$('#criteria-delete').addEventListener('click', async () => {
+  const c = criteriaList.find((x) => x.id === current.criteriaId);
+  if (!c || !confirm(`「${c.title}」を削除します。紐づくロープレモードも消えます。よろしいですか？`)) return;
+  if (!(await run(null, $('#merge-status'), '削除中…', () => api.deleteCriteria(c.id)))) return;
+  current.criteriaId = null;
+  $('#criteria-doc').value = '';
+  $('#criteria-feedback').innerHTML = '';
+  await refreshCriteria();
+});
+
+$('#create-mode-from').addEventListener('click', () => openModeDialog(current.criteriaId));
+
+/* ----------------------------- モード作成ダイアログ ---------------------- */
+
+function openModeDialog(criteriaId) {
+  if (!criteriaList.length) {
+    alert('先に③で判断基準を統合してください。');
+    return;
+  }
+  if (criteriaId) $('#mode-criteria').value = criteriaId;
+  $('#mode-name').value = '';
+  $('#mode-scenario').value = '';
+  $('#mode-dialog').showModal();
+}
+
+$('#mode-dialog').addEventListener('close', async () => {
+  if ($('#mode-dialog').returnValue !== 'ok') return;
+  const name = $('#mode-name').value.trim();
+  if (!name) return;
+  const out = await api
+    .createMode({
+      name,
+      criteriaId: $('#mode-criteria').value,
+      customerType: $('#mode-customer').value,
+      scenario: $('#mode-scenario').value,
+      voice: $('#mode-voice').value,
+    })
+    .catch((err) => {
+      alert(`作成できませんでした：${err.message}`);
+      return null;
+    });
+  if (out) await refreshModes();
+});
+
+/* ------------------------------ 録音・再生 ------------------------------ */
 
 const player = $('#player');
 const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
 let audioUnlocked = false;
+let lastObjectUrl = null;
 
 // iOS Safariはユーザー操作の中でしか再生を開始できない。
-// 録音ボタンを押した瞬間に無音を再生して、以降のプログラム再生を許可させる。
+// 操作の瞬間に無音を鳴らして、以降のプログラム再生を許可させる。
 function unlockAudio() {
   if (audioUnlocked) return;
   player.src = SILENT_WAV;
-  player.play().then(
-    () => {
-      audioUnlocked = true;
-    },
-    () => {},
-  );
+  player.play().then(() => {
+    audioUnlocked = true;
+  }, () => {});
 }
-
-let lastObjectUrl = null;
 
 function play(text, audioUrl) {
   if (!audioUrl) {
@@ -702,11 +602,10 @@ function play(text, audioUrl) {
 function dataUriToObjectUrl(uri) {
   try {
     const [head, b64] = uri.split(',');
-    const mime = head.slice(5).replace(';base64', '');
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+    return URL.createObjectURL(new Blob([bytes], { type: head.slice(5).replace(';base64', '') }));
   } catch {
     return null;
   }
@@ -724,14 +623,12 @@ let mediaRecorder = null;
 let chunks = [];
 let stream = null;
 
-function pickMime() {
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'];
-  return candidates.find((c) => window.MediaRecorder?.isTypeSupported?.(c)) || '';
-}
+const pickMime = () =>
+  ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'].find((c) => window.MediaRecorder?.isTypeSupported?.(c)) || '';
 
 $('#record-btn').addEventListener('click', async () => {
   unlockAudio();
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
+  if (mediaRecorder?.state === 'recording') {
     mediaRecorder.stop();
     return;
   }
@@ -746,8 +643,13 @@ $('#record-btn').addEventListener('click', async () => {
       setRecordingUI(false);
       const type = mediaRecorder.mimeType || mimeType || 'audio/webm';
       const blob = new Blob(chunks, { type });
-      const ext = type.includes('mp4') || type.includes('aac') ? 'mp4' : 'webm';
-      if (blob.size > 0) sendTurn({ audio: blob, filename: `turn.${ext}` });
+      if (blob.size) {
+        sendTurn({
+          audio: blob,
+          filename: `turn.${type.includes('mp4') || type.includes('aac') ? 'mp4' : 'webm'}`,
+          payload: { vocabulary: settings.get('vocabulary') },
+        });
+      }
     };
     mediaRecorder.start();
     setRecordingUI(true);
@@ -762,14 +664,19 @@ function setRecordingUI(on) {
   $('#record-label').textContent = on ? '停止して送信' : '押して話す';
 }
 
-/* -------------------------------- 初期化 --------------------------------- */
+/* -------------------------------- 初期化 -------------------------------- */
 
-renderSessionList();
-renderSessionDetail();
-renderCriteria();
-renderQAList();
-setPracticeEnabled(false);
+async function refreshAll() {
+  await Promise.all([refreshCases(), refreshCriteria(), refreshModes()]);
+  renderModeList();
+}
 
-if (store.state.settings.workerUrl) {
-  api.config().then(applyConfig).catch(() => {});
+if (settings.get('workerUrl')) {
+  api
+    .config()
+    .then(async (cfg) => {
+      applyConfig(cfg);
+      await refreshAll();
+    })
+    .catch(() => {});
 }

@@ -11,62 +11,60 @@
 <header class="topbar">
   <div class="brand">
     <span class="logo">Clarion</span>
-    <span class="tagline">エースの判断を、聞いて・書いて・練習する</span>
+    <span class="tagline">聞いて溜める・練習する・束ねる</span>
   </div>
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-tab="interview" role="tab">① 「なぜ」を聞く</button>
-    <button class="tab" data-tab="criteria" role="tab">② 判断基準にする</button>
-    <button class="tab" data-tab="practice" role="tab">③ 練習する</button>
+    <button class="tab is-active" data-tab="capture" role="tab">① 蓄積</button>
+    <button class="tab" data-tab="practice" role="tab">② ロープレ</button>
+    <button class="tab" data-tab="merge" role="tab">③ 統合</button>
     <button class="tab" data-tab="settings" role="tab">設定</button>
   </nav>
 </header>
 
 <main>
-  <!-- ① 「なぜ」を聞く -->
-  <section class="panel is-active" id="panel-interview">
+  <!-- ① 蓄積 -->
+  <section class="panel is-active" id="panel-capture">
     <div class="split">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <h2>セッション</h2>
-          <button class="btn btn-sm" id="new-session">＋ 新規</button>
+          <h2>案件</h2>
+          <button class="btn btn-sm" id="new-case">＋ 新規</button>
         </div>
-        <ul class="session-list" id="session-list"></ul>
-        <div class="sidebar-foot">
-          <button class="btn btn-ghost btn-sm" id="bulk-import">一括インポート</button>
-        </div>
+        <ul class="list" id="case-list"></ul>
       </aside>
 
-      <div class="content" id="session-detail">
-        <div class="empty" id="session-empty">
-          <p>「＋ 新規」からセッションを作って、接客の書き起こしを貼るか、音声ファイルを読み込んでください。</p>
+      <div class="content">
+        <div class="empty" id="case-empty">
+          <p>「＋ 新規」で案件を作り、接客の書き起こしを貼るか音声ファイルを読み込んでください。<br>
+             ここで溜めた回答が、③の統合で判断基準になります。</p>
         </div>
 
-        <div class="session-body" id="session-body" hidden>
+        <div id="case-body" hidden>
           <div class="field-row">
-            <input class="input title-input" id="session-title" placeholder="セッション名（例：田中さん／10月3日 買取接客）">
-            <button class="btn btn-ghost btn-sm" id="delete-session">削除</button>
+            <input class="input title-input" id="case-title" placeholder="案件名（例：10月3日 買取相談）">
+            <button class="btn btn-ghost btn-sm danger" id="delete-case">削除</button>
           </div>
+          <div class="field-row">
+            <input class="input" id="case-ace" placeholder="誰の接客か（例：田中店長）">
+            <input class="input" id="case-date" type="date">
+          </div>
+          <input class="input" id="case-context" placeholder="前提（店舗・商材・状況など）">
 
           <details class="block" open>
-            <summary>書き起こし・前提情報</summary>
-            <label class="label">前提情報（任意）
-              <input class="input" id="session-context" placeholder="店舗／商材／エースの氏名・在籍年数など">
-            </label>
-            <label class="label">書き起こし
-              <textarea class="input textarea-lg" id="session-transcript" placeholder="接客の書き起こしを貼り付け"></textarea>
-            </label>
+            <summary>書き起こし</summary>
+            <textarea class="input textarea-lg" id="case-transcript" placeholder="接客の書き起こしを貼り付け"></textarea>
             <div class="row">
               <label class="btn btn-ghost btn-sm file-btn">
-                音声ファイルから書き起こす
+                音声ファイルを読み込む
                 <input type="file" id="audio-file" accept="audio/*,video/mp4" hidden>
               </label>
-              <span class="hint">監視カメラ映像から <code>ffmpeg -i clip.mp4 -vn -acodec pcm_s16le -ar 16000 audio.wav</code> で抽出した音声を想定（25MBまで）</span>
+              <span class="hint">監視カメラ映像から <code>ffmpeg -i clip.mp4 -vn -acodec pcm_s16le -ar 16000 audio.wav</code> で抽出した音声を想定（25MBまで）。音声は書き起こし後に破棄され、保存されません。</span>
             </div>
           </details>
 
           <div class="row row-actions">
             <button class="btn btn-primary" id="detect-btn">転換点を検出して質問を作る</button>
-            <span class="status" id="interview-status"></span>
+            <span class="status" id="capture-status"></span>
           </div>
 
           <div id="turning-points"></div>
@@ -75,72 +73,109 @@
     </div>
   </section>
 
-  <!-- ② 判断基準にする -->
-  <section class="panel" id="panel-criteria">
+  <!-- ② ロープレ -->
+  <section class="panel" id="panel-practice">
     <div class="split">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <h2>回答済みQ&amp;A</h2>
-          <button class="btn btn-sm" id="qa-toggle-all">全選択</button>
+          <h2>モード</h2>
+          <button class="btn btn-sm" id="new-mode">＋ 作る</button>
         </div>
-        <ul class="qa-list" id="qa-list"></ul>
+        <ul class="list" id="mode-list"></ul>
+        <div class="sidebar-foot">
+          <label class="label">実施者
+            <input class="input" id="trainee" placeholder="あなたの名前">
+          </label>
+        </div>
       </aside>
-      <div class="content">
-        <label class="label">補足メモ（任意）
-          <input class="input" id="criteria-notes" placeholder="この人の担当領域、対象商材、統合時に意識してほしいこと">
-        </label>
-        <div class="row row-actions">
-          <button class="btn btn-primary" id="synthesize-btn">選択したQ&amp;Aを判断基準に統合する</button>
-          <span class="status" id="criteria-status"></span>
+
+      <div class="content practice">
+        <div class="empty" id="practice-empty">
+          <p>モードを選んで「開始」を押してください。<br>
+             モードは「③で束ねた判断基準 × 客タイプ × 場面」の組み合わせです。</p>
         </div>
 
-        <div class="field-row">
-          <select class="input" id="criteria-select"></select>
-          <button class="btn btn-ghost btn-sm" id="criteria-copy">コピー</button>
-          <button class="btn btn-ghost btn-sm" id="criteria-download">.md保存</button>
-          <button class="btn btn-ghost btn-sm" id="criteria-delete">削除</button>
+        <div id="practice-body" hidden>
+          <div class="field-row">
+            <div>
+              <strong id="run-mode-name"></strong>
+              <span class="hint" id="run-mode-detail"></span>
+            </div>
+            <button class="btn btn-primary" id="start-run">開始</button>
+          </div>
+
+          <div class="convo" id="convo"></div>
+
+          <div class="composer">
+            <button class="btn btn-record" id="record-btn" disabled>
+              <span class="rec-dot"></span><span id="record-label">押して話す</span>
+            </button>
+            <input class="input" id="text-input" placeholder="テキストで話す" disabled>
+            <button class="btn" id="send-text" disabled>送信</button>
+            <button class="btn btn-ghost" id="score-run" disabled>終了して採点</button>
+          </div>
+          <div class="status" id="practice-status"></div>
+
+          <div id="score-result"></div>
+
+          <!-- フィードバック：③の統合に渡る -->
+          <div class="card feedback" id="feedback-box" hidden>
+            <h3>この回のフィードバック</h3>
+            <p class="hint">ここで返した評価とコメントが、③の統合で判断基準の書き直しに使われます。</p>
+            <div class="fb-grid">
+              <label class="label">AI客の再現度
+                <select class="input" id="fb-realism"></select>
+              </label>
+              <label class="label">採点の納得感
+                <select class="input" id="fb-scoring"></select>
+              </label>
+            </div>
+            <label class="label">コメント（当事者ならどうするか、どこが的外れか）
+              <textarea class="input" id="fb-note" rows="3" placeholder="例：この客はこの場面で黙り込むはず。自分なら先に品物の話をする。"></textarea>
+            </label>
+            <div class="row row-end">
+              <span class="status" id="fb-status"></span>
+              <button class="btn btn-primary btn-sm" id="fb-save">フィードバックを送る</button>
+            </div>
+          </div>
         </div>
-        <textarea class="input textarea-doc" id="criteria-doc" placeholder="統合結果がここに出ます。そのまま編集して保存できます。"></textarea>
-        <p class="hint">編集内容は自動保存されます。ここで選択中のドキュメントが、③の練習と採点の基準になります。</p>
       </div>
     </div>
   </section>
 
-  <!-- ③ 練習する -->
-  <section class="panel" id="panel-practice">
+  <!-- ③ 統合 -->
+  <section class="panel" id="panel-merge">
     <div class="split">
       <aside class="sidebar">
-        <h2>設定</h2>
-        <label class="label">判断基準
-          <select class="input" id="practice-criteria"></select>
-        </label>
-        <label class="label">客タイプ
-          <select class="input" id="customer-type"></select>
-        </label>
-        <label class="label">場面設定（任意）
-          <textarea class="input" id="scenario" rows="3" placeholder="例：閉店30分前。ブランドバッグの買取査定。他店で3万円と言われている。"></textarea>
-        </label>
-        <label class="label">客の声
-          <select class="input" id="voice-actor"></select>
-        </label>
-        <div class="row">
-          <button class="btn btn-primary" id="start-run">ロープレ開始</button>
-          <button class="btn btn-ghost" id="score-run" disabled>終了して採点</button>
+        <div class="sidebar-head">
+          <h2>案件を選ぶ</h2>
+          <button class="btn btn-sm" id="merge-toggle-all">全選択</button>
         </div>
-        <p class="hint" id="practice-hint"></p>
+        <ul class="list" id="merge-case-list"></ul>
+        <div class="sidebar-foot">
+          <label class="label">補足メモ
+            <input class="input" id="merge-notes" placeholder="統合時に意識してほしいこと">
+          </label>
+          <label class="check">
+            <input type="checkbox" id="use-feedback" checked>
+            <span>ロープレのフィードバックを反映する</span>
+          </label>
+          <button class="btn btn-primary" id="merge-btn">選んだ案件を判断基準に統合する</button>
+          <p class="status" id="merge-status"></p>
+        </div>
       </aside>
 
-      <div class="content practice">
-        <div class="convo" id="convo"></div>
-        <div class="composer">
-          <button class="btn btn-record" id="record-btn" disabled>
-            <span class="rec-dot"></span><span id="record-label">押して話す</span>
-          </button>
-          <input class="input" id="text-input" placeholder="テキストで話す（音声が使えない場合）" disabled>
-          <button class="btn" id="send-text" disabled>送信</button>
+      <div class="content">
+        <div class="field-row">
+          <select class="input" id="criteria-select"></select>
+          <button class="btn btn-ghost btn-sm" id="criteria-download">.md保存</button>
+          <button class="btn btn-ghost btn-sm danger" id="criteria-delete">削除</button>
         </div>
-        <div class="status" id="practice-status"></div>
-        <div id="score-result"></div>
+        <div class="row row-actions">
+          <button class="btn btn-sm" id="create-mode-from">この判断基準からロープレモードを作る</button>
+        </div>
+        <div id="criteria-feedback"></div>
+        <textarea class="input textarea-doc" id="criteria-doc" placeholder="統合した判断基準がここに出ます。編集すると自動保存されます。"></textarea>
       </div>
     </div>
   </section>
@@ -152,35 +187,42 @@
         <input class="input" id="worker-url" placeholder="https://clarion-proxy.xxxx.workers.dev">
       </label>
       <label class="label">アクセストークン
-        <input class="input" id="access-token" type="password" placeholder="Workerの ACCESS_TOKENS に登録した値">
+        <input class="input" id="access-token" type="password" placeholder="clientA: より後ろの部分だけ">
       </label>
-      <label class="label">固有名詞ヒント（Whisperの精度向上・任意）
-        <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名などをカンマ区切りで">
+      <label class="label">固有名詞ヒント（書き起こし精度の向上・任意）
+        <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
       </label>
       <div class="row row-actions">
         <button class="btn btn-primary" id="test-connection">接続テスト</button>
         <span class="status" id="settings-status"></span>
       </div>
       <hr>
-      <h2>データ</h2>
-      <p class="hint">すべてこの端末のブラウザ内（localStorage）に保存されます。端末を変えるときは書き出し／読み込みを使ってください。</p>
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" id="export-data">全データを書き出す</button>
-        <label class="btn btn-ghost btn-sm file-btn">読み込む<input type="file" id="import-data" accept="application/json" hidden></label>
-        <button class="btn btn-ghost btn-sm danger" id="reset-data">全消去</button>
-      </div>
+      <p class="hint">案件・判断基準・モード・実施記録はWorker側のデータベースに保存されます。端末を変えても同じデータが見えます。この画面に保存されるのは接続設定と実施者名だけです。</p>
     </div>
   </section>
 </main>
 
-<dialog id="bulk-dialog">
+<dialog id="mode-dialog">
   <form method="dialog">
-    <h2>一括インポート</h2>
-    <p class="hint">JSON配列で流し込みます。<code>[{"title":"…","text":"書き起こし","qa":[{"question":"…","answer":"…"}]}]</code> の形式。text だけでも可。</p>
-    <textarea class="input textarea-lg" id="bulk-json" placeholder='[{"title":"田中さん 10/3","text":"..."}]'></textarea>
+    <h2>ロープレモードを作る</h2>
+    <label class="label">モード名
+      <input class="input" id="mode-name" placeholder="例：田中店長の基準 × 不満客">
+    </label>
+    <label class="label">判断基準
+      <select class="input" id="mode-criteria"></select>
+    </label>
+    <label class="label">客タイプ
+      <select class="input" id="mode-customer"></select>
+    </label>
+    <label class="label">場面設定
+      <textarea class="input" id="mode-scenario" rows="3" placeholder="例：閉店30分前。母から譲られたバッグの買取相談。他店で3万円と言われている。"></textarea>
+    </label>
+    <label class="label">客の声
+      <select class="input" id="mode-voice"></select>
+    </label>
     <div class="row row-end">
       <button class="btn btn-ghost" value="cancel">キャンセル</button>
-      <button class="btn btn-primary" id="bulk-run" value="ok">取り込む</button>
+      <button class="btn btn-primary" value="ok">作る</button>
     </div>
   </form>
 </dialog>

@@ -1,9 +1,15 @@
 // Clarion backend — Cloudflare Worker
-// フロント（GitHub Pages）からのリクエストを受け、Claude / Whisper / TTS を叩く。
-// 目的：APIキーの隠蔽と、STT→LLM→TTSの直列処理を1リクエストに集約すること。
+//
+// 3ステップ構成：
+//   1. 蓄積   /api/cases …        接客を溜め、なぜを聞き、回答を貯める
+//   2. ロープレ /api/modes, /api/runs … 溜めたものから作ったモードで練習し、フィードバックを返す
+//   3. 統合   /api/criteria …     複数の案件とフィードバックを束ねて判断基準にする
+//
+// APIキーの隠蔽と、STT→LLM→TTSの直列処理の集約もここが担う。
 
 import { ApiError, MODELS, generateStructured, generateText } from './llm.js';
 import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
+import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
   criteriaRequest,
@@ -18,6 +24,8 @@ import {
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // Whisper APIの上限
 const MAX_TRANSCRIPT_CHARS = 60000;
 
+/* -------------------------------- 共通処理 -------------------------------- */
+
 function corsHeaders(request, env) {
   const origin = request.headers.get('origin') || '';
   const allowed = (env.ALLOWED_ORIGINS || '*')
@@ -27,7 +35,7 @@ function corsHeaders(request, env) {
   const allowOrigin = allowed.includes('*') ? '*' : allowed.includes(origin) ? origin : '';
   return {
     'access-control-allow-origin': allowOrigin || 'null',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers': 'content-type,x-clarion-token',
     'access-control-max-age': '86400',
     vary: 'origin',
@@ -41,6 +49,13 @@ function json(data, request, env, status = 200) {
   });
 }
 
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 /**
  * クライアント別トークン認証。
  * ACCESS_TOKENS 未設定なら誰でも通す（ローカル開発用）。
@@ -48,24 +63,36 @@ function json(data, request, env, status = 200) {
  */
 function authenticate(request, env) {
   const raw = (env.ACCESS_TOKENS || '').trim();
-  if (!raw) return { client: 'dev' };
   const supplied = request.headers.get('x-clarion-token') || '';
+  if (!raw) return { client: 'dev', admin: true };
   if (!supplied) throw new ApiError(401, 'アクセストークンが必要です');
 
   for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
     const idx = entry.indexOf(':');
     const name = idx === -1 ? 'client' : entry.slice(0, idx);
     const token = idx === -1 ? entry : entry.slice(idx + 1);
-    if (token && timingSafeEqual(token, supplied)) return { client: name };
+    if (token && timingSafeEqual(token, supplied)) return { client: name, admin: isAdmin(env, supplied) };
   }
   throw new ApiError(401, 'アクセストークンが違います');
 }
 
-function timingSafeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+/**
+ * 統合（ステップ3）を管理者に限定するための判定。
+ * ADMIN_TOKENS 未設定のあいだは全員が管理者＝フルオープン。
+ * 絞りたくなったら、この環境変数に管理者トークンを入れるだけでよい。
+ */
+function isAdmin(env, supplied) {
+  const raw = (env.ADMIN_TOKENS || '').trim();
+  if (!raw) return true;
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .some((token) => timingSafeEqual(token, supplied));
+}
+
+function requireAdmin(auth) {
+  if (!auth.admin) throw new ApiError(403, 'この操作は管理者のみです');
 }
 
 async function readBody(request) {
@@ -101,146 +128,11 @@ function requireString(value, name, max = MAX_TRANSCRIPT_CHARS) {
   return value.trim();
 }
 
-const routes = {
-  'GET /api/health': async (_body, request, env) => json({ ok: true, service: 'clarion' }, request, env),
-
-  'GET /api/config': async (_body, request, env) =>
-    json(
-      {
-        customerTypes: CUSTOMER_TYPES.map(({ id, label, hint }) => ({ id, label, hint })),
-        voices: listVoices(env),
-        stt: Boolean(env.OPENAI_API_KEY),
-        tts: activeProvider(env),
-        models: MODELS,
-      },
-      request,
-      env,
-    ),
-
-  // ① 音声 → 書き起こし（監視カメラ映像からffmpegで抜いた音声を想定）
-  'POST /api/stt': async (body, request, env) => {
-    if (!body.__audio) throw new ApiError(400, '音声ファイルが必要です');
-    const transcript = await transcribe(env, body.__audio, {
-      prompt: body.vocabulary,
-      filename: body.__filename,
-    });
-    return json({ transcript }, request, env);
-  },
-
-  // ② 「なぜ」を聞く — 転換点抽出と質問生成
-  'POST /api/questions': async (body, request, env) => {
-    const transcript = requireString(body.transcript, 'transcript');
-    const req = turningPointsRequest({ transcript, context: body.context });
-    const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 6000 });
-    const points = (out.turning_points || []).filter((p) => p && p.quote);
-
-    // スキーマのrequiredは厳密には強制されないため、questionsが欠けることがある。
-    // 転換点自体は使えるので、欠けた分だけ埋め直す（全体をやり直すより速く安い）。
-    const missing = points.filter((p) => !(p.questions || []).length);
-    if (missing.length) {
-      console.warn(`questions missing for ${missing.length}/${points.length} turning points; repairing`);
-      try {
-        const repair = await generateStructured(env, {
-          ...fillQuestionsRequest({ transcript, points: missing }),
-          model: MODELS.analysis,
-          maxTokens: 3000,
-        });
-        for (const item of repair.items || []) {
-          const target = missing[item.index];
-          if (target && (item.questions || []).length) target.questions = item.questions;
-        }
-      } catch (err) {
-        console.warn('question repair failed', err?.message || err);
-      }
-    }
-
-    return json({ turningPoints: points.filter((p) => (p.questions || []).length) }, request, env);
-  },
-
-  // ② 追加で掘る質問
-  'POST /api/follow-up': async (body, request, env) => {
-    const question = requireString(body.question, 'question', 4000);
-    const answer = requireString(body.answer, 'answer', 8000);
-    const req = followUpRequest({ question, answer, quote: body.quote });
-    const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 1000 });
-    return json(out, request, env);
-  },
-
-  // ③ 判断基準ドキュメント化
-  'POST /api/criteria': async (body, request, env) => {
-    const qa = Array.isArray(body.qa) ? body.qa.filter((x) => x && x.question && x.answer) : [];
-    if (qa.length === 0) throw new ApiError(400, '回答済みのQ&Aが1件以上必要です');
-    const req = criteriaRequest({ qa, notes: body.notes });
-    const doc = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 8000 });
-    return json({ document: doc, markdown: criteriaToMarkdown(doc) }, request, env);
-  },
-
-  // ④ ロープレ1ターン：音声 → Whisper → Claude → TTS を直列で処理
-  'POST /api/roleplay/turn': async (body, request, env) => {
-    let transcript = typeof body.text === 'string' ? body.text.trim() : '';
-    if (!transcript && body.__audio) {
-      transcript = await transcribe(env, body.__audio, {
-        prompt: body.vocabulary,
-        filename: body.__filename,
-      });
-    }
-    if (!transcript && !body.opening) throw new ApiError(400, '発話（音声またはテキスト）が必要です');
-
-    const history = Array.isArray(body.history) ? body.history.slice(-40) : [];
-    const messages = history.map((m) => ({
-      role: m.role === 'trainee' ? 'user' : 'assistant',
-      content: String(m.text || '').slice(0, 4000),
-    }));
-
-    if (body.opening && !transcript) {
-      // 客側から口火を切らせる（来店直後の想定）
-      messages.push({ role: 'user', content: '（お客様が来店しました。あなたから最初の一言をどうぞ）' });
-    } else {
-      messages.push({ role: 'user', content: transcript });
-    }
-
-    const replyText = await generateText(env, {
-      model: MODELS.chat,
-      system: roleplaySystemPrompt({
-        customerType: body.customerType,
-        scenario: body.scenario,
-        criteria: body.criteria,
-      }),
-      messages,
-      maxTokens: 300,
-      temperature: 1,
-    });
-
-    const audioUrl = await synthesize(env, replyText, {
-      voice: body.voice,
-      speed: body.speed,
-      ...voiceDirection(body.customerType),
-    });
-
-    return json({ transcript, replyText, audioUrl }, request, env);
-  },
-
-  // ④ 採点
-  'POST /api/roleplay/score': async (body, request, env) => {
-    const criteria = requireString(body.criteria, 'criteria');
-    const history = Array.isArray(body.history) ? body.history : [];
-    if (history.length === 0) throw new ApiError(400, '会話履歴が必要です');
-    const req = scoringRequest({ history, criteria });
-    const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000 });
-    return json(out, request, env);
-  },
-
-  // 単体TTS（読み上げのやり直し用）
-  'POST /api/tts': async (body, request, env) => {
-    const text = requireString(body.text, 'text', 3000);
-    const audioUrl = await synthesize(env, text, {
-      voice: body.voice,
-      speed: body.speed,
-      ...voiceDirection(body.customerType),
-    });
-    return json({ audioUrl }, request, env);
-  },
-};
+/** 音声は書き起こしたら破棄する。監視カメラ録音を保持しない方針のため保存はしない。 */
+async function transcribeIfAudio(env, body) {
+  if (!body.__audio) return '';
+  return transcribe(env, body.__audio, { prompt: body.vocabulary, filename: body.__filename });
+}
 
 function criteriaToMarkdown(doc) {
   const lines = [`# ${doc.title || '判断基準ドキュメント'}`, '', doc.summary || '', ''];
@@ -255,28 +147,445 @@ function criteriaToMarkdown(doc) {
   return lines.join('\n');
 }
 
+/* --------------------------------- ルート -------------------------------- */
+
+const routes = [
+  ['GET', '/api/health', async (_c) => ({ ok: true, service: 'clarion' })],
+
+  [
+    'GET',
+    '/api/config',
+    async ({ env, auth }) => ({
+      customerTypes: CUSTOMER_TYPES.map(({ id, label, hint }) => ({ id, label, hint })),
+      voices: listVoices(env),
+      stt: Boolean(env.OPENAI_API_KEY),
+      tts: activeProvider(env),
+      models: MODELS,
+      client: auth.client,
+      admin: auth.admin,
+      feedbackOptions: FEEDBACK_OPTIONS,
+    }),
+  ],
+
+  /* ------------------------------ 1. 蓄積 ------------------------------- */
+
+  ['GET', '/api/cases', async ({ env, auth }) => ({ cases: await db.listCases(env, auth.client) })],
+
+  [
+    'POST',
+    '/api/cases',
+    async ({ env, auth, body }) => {
+      const transcribed = await transcribeIfAudio(env, body);
+      const transcript = [body.transcript, transcribed].filter(Boolean).join('\n').trim();
+      return {
+        case: await db.createCase(env, auth.client, {
+          ...body,
+          transcript,
+          source: transcribed ? 'audio' : 'text',
+        }),
+      };
+    },
+  ],
+
+  ['GET', '/api/cases/:id', async ({ env, auth, params }) => ({ case: await db.getCase(env, auth.client, params.id) })],
+
+  [
+    'PATCH',
+    '/api/cases/:id',
+    async ({ env, auth, params, body }) => ({ case: await db.updateCase(env, auth.client, params.id, body) }),
+  ],
+
+  [
+    'DELETE',
+    '/api/cases/:id',
+    async ({ env, auth, params }) => {
+      await db.deleteCase(env, auth.client, params.id);
+      return { ok: true };
+    },
+  ],
+
+  // 音声を追記で書き起こす（既存の書き起こしの後ろに足す）
+  [
+    'POST',
+    '/api/cases/:id/transcribe',
+    async ({ env, auth, params, body }) => {
+      const text = await transcribeIfAudio(env, body);
+      if (!text) throw new ApiError(400, '音声ファイルが必要です');
+      const current = await db.getCase(env, auth.client, params.id);
+      const transcript = [current.transcript, text].filter(Boolean).join('\n');
+      return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };
+    },
+  ],
+
+  // 転換点を検出して質問を作り、案件に追記する
+  [
+    'POST',
+    '/api/cases/:id/detect',
+    async ({ env, auth, params }) => {
+      const target = await db.getCase(env, auth.client, params.id);
+      const transcript = requireString(target.transcript, '書き起こし');
+      const req = turningPointsRequest({ transcript, context: contextOf(target) });
+      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 6000 });
+      let points = (out.turning_points || []).filter((p) => p && p.quote);
+
+      // スキーマのrequiredは厳密には強制されないため、questionsが欠けることがある。
+      // 転換点自体は使えるので、欠けた分だけ埋め直す（全体をやり直すより速く安い）。
+      const missing = points.filter((p) => !(p.questions || []).length);
+      if (missing.length) {
+        console.warn(`questions missing for ${missing.length}/${points.length} turning points; repairing`);
+        try {
+          const repair = await generateStructured(env, {
+            ...fillQuestionsRequest({ transcript, points: missing }),
+            model: MODELS.analysis,
+            maxTokens: 3000,
+          });
+          for (const item of repair.items || []) {
+            const t = missing[item.index];
+            if (t && (item.questions || []).length) t.questions = item.questions;
+          }
+        } catch (err) {
+          console.warn('question repair failed', err?.message || err);
+        }
+      }
+
+      points = points.filter((p) => (p.questions || []).length);
+      if (!points.length) throw new ApiError(502, '転換点を抽出できませんでした。書き起こしを確認してください');
+      await db.addTurningPoints(env, params.id, points);
+      return { case: await db.getCase(env, auth.client, params.id), added: points.length };
+    },
+  ],
+
+  [
+    'PATCH',
+    '/api/questions/:id',
+    async ({ env, auth, params, body }) => {
+      await db.saveAnswer(env, auth.client, params.id, String(body.answer ?? '').slice(0, 8000));
+      return { ok: true };
+    },
+  ],
+
+  // もう一段掘る
+  [
+    'POST',
+    '/api/questions/:id/follow-up',
+    async ({ env, auth, params, body }) => {
+      const question = requireString(body.question, 'question', 4000);
+      const answer = requireString(body.answer, 'answer', 8000);
+      await db.saveAnswer(env, auth.client, params.id, answer);
+      const req = followUpRequest({ question, answer, quote: body.quote });
+      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 1000 });
+      const questions = out.enough ? [] : out.questions || [];
+      if (questions.length) await db.insertFollowUps(env, params.id, questions);
+      return { enough: Boolean(out.enough), reason: out.reason || '', added: questions };
+    },
+  ],
+
+  /* ------------------------------ 3. 統合 ------------------------------- */
+
+  ['GET', '/api/criteria', async ({ env, auth }) => ({ criteria: await db.listCriteria(env, auth.client) })],
+
+  ['GET', '/api/criteria/:id', async ({ env, auth, params }) => ({ criteria: await db.getCriteria(env, auth.client, params.id) })],
+
+  // 統合の材料になるフィードバック（次の統合に食わせる）
+  [
+    'GET',
+    '/api/criteria/:id/feedback',
+    async ({ env, auth, params }) => ({ feedback: await db.feedbackForCriteria(env, auth.client, [params.id]) }),
+  ],
+
+  [
+    'POST',
+    '/api/criteria',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth);
+      const caseIds = Array.isArray(body.caseIds) ? body.caseIds.filter(Boolean) : [];
+      if (!caseIds.length) throw new ApiError(400, '統合する案件を1件以上選んでください');
+
+      const qa = await db.answeredQA(env, auth.client, caseIds);
+      if (!qa.length) throw new ApiError(400, '選んだ案件に回答済みのQ&Aがありません');
+
+      // 前回までのロープレで「的外れ」と評価された点や自由記述を、統合の補足として渡す
+      const fbIds = Array.isArray(body.feedbackCriteriaIds) ? body.feedbackCriteriaIds.filter(Boolean) : [];
+      const feedback = fbIds.length ? await db.feedbackForCriteria(env, auth.client, fbIds) : [];
+      const notes = [body.notes, formatFeedbackNotes(feedback)].filter(Boolean).join('\n\n');
+
+      const req = criteriaRequest({
+        qa: qa.map((r) => ({ question: r.question, answer: r.answer, quote: r.quote })),
+        notes,
+      });
+      const doc = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 8000 });
+
+      return {
+        criteria: await db.createCriteria(env, auth.client, {
+          title: doc.title || '判断基準ドキュメント',
+          summary: doc.summary || '',
+          markdown: criteriaToMarkdown(doc),
+          caseIds,
+          qaCount: qa.length,
+        }),
+        usedFeedback: feedback.length,
+      };
+    },
+  ],
+
+  [
+    'PATCH',
+    '/api/criteria/:id',
+    async ({ env, auth, params, body }) => {
+      requireAdmin(auth);
+      await db.updateCriteria(env, auth.client, params.id, requireString(body.markdown, 'markdown'));
+      return { ok: true };
+    },
+  ],
+
+  [
+    'DELETE',
+    '/api/criteria/:id',
+    async ({ env, auth, params }) => {
+      requireAdmin(auth);
+      await db.deleteCriteria(env, auth.client, params.id);
+      return { ok: true };
+    },
+  ],
+
+  /* ----------------------------- 2. ロープレ ---------------------------- */
+
+  ['GET', '/api/modes', async ({ env, auth }) => ({ modes: await db.listModes(env, auth.client) })],
+
+  [
+    'POST',
+    '/api/modes',
+    async ({ env, auth, body }) => {
+      const name = requireString(body.name, 'name', 200);
+      const criteriaId = requireString(body.criteriaId, 'criteriaId', 100);
+      await db.getCriteria(env, auth.client, criteriaId); // 存在確認
+      const customerType = requireString(body.customerType, 'customerType', 100);
+      const mode = await db.createMode(env, auth.client, {
+        name,
+        criteriaId,
+        customerType,
+        scenario: body.scenario,
+        voice: body.voice,
+      });
+      return { mode: modeSummary(mode) };
+    },
+  ],
+
+  [
+    'DELETE',
+    '/api/modes/:id',
+    async ({ env, auth, params }) => {
+      await db.deleteMode(env, auth.client, params.id);
+      return { ok: true };
+    },
+  ],
+
+  ['GET', '/api/runs', async ({ env, auth, url }) => ({
+    runs: await db.listRuns(env, auth.client, { criteriaId: url.searchParams.get('criteriaId') || undefined }),
+  })],
+
+  // 開始：客に第一声を言わせるところまで
+  [
+    'POST',
+    '/api/runs',
+    async ({ env, auth, body }) => {
+      const mode = await db.getMode(env, auth.client, requireString(body.modeId, 'modeId', 100));
+      const runId = await db.createRun(env, auth.client, {
+        modeId: mode.id,
+        criteriaId: mode.criteria_id,
+        trainee: String(body.trainee || '').slice(0, 100),
+      });
+      const turn = await speakAsCustomer(env, mode, [], { opening: true });
+      const history = [{ role: 'customer', text: turn.replyText }];
+      await db.saveRun(env, auth.client, runId, { history });
+      return { runId, mode: modeSummary(mode), history, ...turn };
+    },
+  ],
+
+  // 1ターン：音声 → Whisper → Claude → TTS
+  [
+    'POST',
+    '/api/runs/:id/turn',
+    async ({ env, auth, params, body }) => {
+      const runs = await db.listRuns(env, auth.client, {});
+      const run = runs.find((r) => r.id === params.id);
+      if (!run) throw new ApiError(404, '実施記録が見つかりません');
+      const mode = await db.getMode(env, auth.client, run.mode_id);
+
+      let text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) text = await transcribeIfAudio(env, body);
+      if (!text) throw new ApiError(400, '発話（音声またはテキスト）が必要です');
+
+      const history = [...run.history, { role: 'trainee', text }];
+      const turn = await speakAsCustomer(env, mode, history, {});
+      history.push({ role: 'customer', text: turn.replyText });
+      await db.saveRun(env, auth.client, params.id, { history });
+      return { transcript: text, history, ...turn };
+    },
+  ],
+
+  [
+    'POST',
+    '/api/runs/:id/score',
+    async ({ env, auth, params }) => {
+      const runs = await db.listRuns(env, auth.client, {});
+      const run = runs.find((r) => r.id === params.id);
+      if (!run) throw new ApiError(404, '実施記録が見つかりません');
+      if (!run.history.length) throw new ApiError(400, '会話がありません');
+      const criteria = await db.getCriteria(env, auth.client, run.criteria_id);
+      const req = scoringRequest({ history: run.history, criteria: criteria.markdown });
+      const score = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000 });
+      await db.saveRun(env, auth.client, params.id, { score });
+      return { score };
+    },
+  ],
+
+  // フィードバック：客の再現度と採点の納得感を別々に受ける
+  [
+    'PATCH',
+    '/api/runs/:id/feedback',
+    async ({ env, auth, params, body }) => {
+      await db.saveFeedback(env, auth.client, params.id, {
+        realism: body.realism,
+        scoring: body.scoring,
+        note: body.note,
+      });
+      return { ok: true };
+    },
+  ],
+
+  // 単体TTS（読み上げのやり直し用）
+  [
+    'POST',
+    '/api/tts',
+    async ({ env, body }) => {
+      const text = requireString(body.text, 'text', 3000);
+      const audioUrl = await synthesize(env, text, {
+        voice: body.voice,
+        speed: body.speed,
+        ...voiceDirection(body.customerType),
+      });
+      return { audioUrl };
+    },
+  ],
+];
+
+export const FEEDBACK_OPTIONS = {
+  realism: [
+    { value: 'real', label: '現場にいそうな客だった' },
+    { value: 'mostly', label: 'だいたい現実的' },
+    { value: 'off', label: '少しずれている' },
+    { value: 'wrong', label: '的外れ' },
+  ],
+  scoring: [
+    { value: 'agree', label: '納得できる採点' },
+    { value: 'mostly', label: 'だいたい納得' },
+    { value: 'off', label: '少しずれている' },
+    { value: 'wrong', label: '的外れ' },
+  ],
+};
+
+const labelOf = (kind, value) => FEEDBACK_OPTIONS[kind].find((o) => o.value === value)?.label || value || '未評価';
+
+/** ロープレのフィードバックを、統合プロンプトに渡せる文章にする */
+function formatFeedbackNotes(feedback) {
+  if (!feedback.length) return '';
+  const lines = feedback.map((f) => {
+    const head = `- [${f.mode_name || 'モード不明'}] 客の再現度:${labelOf('realism', f.fb_realism)} / 採点:${labelOf('scoring', f.fb_scoring)}`;
+    return f.fb_note ? `${head}\n  現場のコメント：${f.fb_note}` : head;
+  });
+  return `【前回までのロープレに対する現場からのフィードバック】
+以下は、この判断基準で練習した人・見た人の評価です。「少しずれている」「的外れ」と言われた点や、
+現場のコメントで指摘された内容は、判断基準の書き方が実態と合っていない可能性があります。
+統合の際に反映してください。
+${lines.join('\n')}`;
+}
+
+const contextOf = (c) => [c.ace_name && `対象者：${c.ace_name}`, c.context].filter(Boolean).join('\n');
+
+/** モードの公開形。criteria_markdown は客役への指示なのでクライアントには返さない。 */
+const modeSummary = (m) => ({
+  id: m.id,
+  name: m.name,
+  criteria_id: m.criteria_id,
+  criteria_title: m.criteria_title,
+  customer_type: m.customer_type,
+  scenario: m.scenario,
+  voice: m.voice,
+});
+
+/** 客役の1発話を作り、読み上げ音声まで用意する */
+async function speakAsCustomer(env, mode, history, { opening }) {
+  const messages = history.map((m) => ({
+    role: m.role === 'trainee' ? 'user' : 'assistant',
+    content: String(m.text || '').slice(0, 4000),
+  }));
+  if (opening) messages.push({ role: 'user', content: '（お客様が来店しました。あなたから最初の一言をどうぞ）' });
+
+  const replyText = await generateText(env, {
+    model: MODELS.chat,
+    system: roleplaySystemPrompt({
+      customerType: mode.customer_type,
+      scenario: mode.scenario,
+      criteria: mode.criteria_markdown,
+    }),
+    messages: messages.slice(-40),
+    maxTokens: 300,
+    temperature: 1,
+  });
+
+  const audioUrl = await synthesize(env, replyText, {
+    voice: mode.voice || undefined,
+    ...voiceDirection(mode.customer_type),
+  });
+  return { replyText, audioUrl };
+}
+
+/* -------------------------------- ルーター ------------------------------- */
+
+function match(method, pathname) {
+  const parts = pathname.replace(/\/$/, '').split('/').filter(Boolean);
+  for (const [routeMethod, pattern, handler] of routes) {
+    if (routeMethod !== method) continue;
+    const segs = pattern.split('/').filter(Boolean);
+    if (segs.length !== parts.length) continue;
+    const params = {};
+    let ok = true;
+    for (let i = 0; i < segs.length; i++) {
+      if (segs[i].startsWith(':')) params[segs[i].slice(1)] = decodeURIComponent(parts[i]);
+      else if (segs[i] !== parts[i]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return { handler, params };
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const key = `${request.method} ${url.pathname.replace(/\/$/, '') || '/'}`;
+    const label = `${request.method} ${url.pathname}`;
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     }
 
-    const handler = routes[key];
-    if (!handler) return json({ error: 'Not found', path: url.pathname }, request, env, 404);
+    const route = match(request.method, url.pathname);
+    if (!route) return json({ error: 'Not found', path: url.pathname }, request, env, 404);
 
     try {
-      if (key !== 'GET /api/health') authenticate(request, env);
-      const body = request.method === 'POST' ? await readBody(request) : {};
-      return await handler(body, request, env);
+      const auth = url.pathname === '/api/health' ? { client: 'anon', admin: false } : authenticate(request, env);
+      const body = request.method === 'GET' || request.method === 'DELETE' ? {} : await readBody(request);
+      const result = await route.handler({ env, auth, body, params: route.params, url, request });
+      return json(result, request, env);
     } catch (err) {
       if (err instanceof ApiError) {
-        console.warn(`[${key}] ${err.status} ${err.message}`, err.detail || '');
+        console.warn(`[${label}] ${err.status} ${err.message}`, err.detail || '');
         return json({ error: err.message, detail: err.detail }, request, env, err.status);
       }
-      console.error(`[${key}] unhandled`, err?.stack || err);
+      console.error(`[${label}] unhandled`, err?.stack || err);
       return json({ error: 'サーバー内部エラー' }, request, env, 500);
     }
   },
