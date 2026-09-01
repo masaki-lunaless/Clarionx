@@ -7,7 +7,7 @@
 //
 // APIキーの隠蔽と、STT→LLM→TTSの直列処理の集約もここが担う。
 
-import { ApiError, MODELS, generateStructured, generateText } from './llm.js';
+import { ApiError, EFFORT, MODELS, generateStructured, generateText } from './llm.js';
 import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
 import * as db from './db.js';
 import {
@@ -262,7 +262,7 @@ const routes = [
       const target = await db.getCase(env, auth.client, params.id);
       const transcript = requireString(target.transcript, '書き起こし');
       const req = turningPointsRequest({ transcript, context: contextOf(target) });
-      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 6000 });
+      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 6000, effort: EFFORT.analysis, label: 'detect' });
       let points = (out.turning_points || []).filter((p) => p && p.quote);
 
       // スキーマのrequiredは厳密には強制されないため、questionsが欠けることがある。
@@ -275,6 +275,8 @@ const routes = [
             ...fillQuestionsRequest({ transcript, points: missing }),
             model: MODELS.analysis,
             maxTokens: 3000,
+            effort: EFFORT.analysis,
+            label: 'detect-repair',
           });
           for (const item of repair.items || []) {
             const t = missing[item.index];
@@ -310,7 +312,7 @@ const routes = [
       const answer = requireString(body.answer, 'answer', 8000);
       await db.saveAnswer(env, auth.client, params.id, answer);
       const req = followUpRequest({ question, answer, quote: body.quote });
-      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 1000 });
+      const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 1000, effort: EFFORT.followUp, label: 'follow-up' });
       const questions = out.enough ? [] : out.questions || [];
       if (questions.length) await db.insertFollowUps(env, params.id, questions);
       return { enough: Boolean(out.enough), reason: out.reason || '', added: questions };
@@ -350,7 +352,7 @@ const routes = [
         qa: qa.map((r) => ({ question: r.question, answer: r.answer, quote: r.quote })),
         notes,
       });
-      const doc = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 8000 });
+      const doc = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 8000, effort: EFFORT.analysis, label: 'merge' });
 
       return {
         criteria: await db.createCriteria(env, auth.client, {
@@ -477,7 +479,7 @@ const routes = [
         criteria: criteria.markdown,
         customerType: mode?.customer_type,
       });
-      const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000 });
+      const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000, effort: EFFORT.scoring, label: 'score' });
       const score = computeTotal(raw);
       await db.saveRun(env, auth.client, params.id, { score });
       return { score };
@@ -593,6 +595,9 @@ async function speakAsCustomer(env, mode, history, { opening }) {
     messages: messages.slice(-40),
     maxTokens: 400,
     temperature: 1,
+    effort: EFFORT.chat,
+    cacheSystem: true,
+    label: 'turn',
   });
   const replyText = stripStageDirections(raw);
 
