@@ -17,6 +17,7 @@
     <button class="tab is-active" data-tab="capture" role="tab">① 蓄積</button>
     <button class="tab" data-tab="practice" role="tab">② ロープレ</button>
     <button class="tab" data-tab="merge" role="tab">③ 統合</button>
+    <button class="tab" data-tab="records" role="tab">記録</button>
     <button class="tab" data-tab="settings" role="tab">設定</button>
   </nav>
 </header>
@@ -177,6 +178,23 @@
         <div id="criteria-feedback"></div>
         <textarea class="input textarea-doc" id="criteria-doc" placeholder="統合した判断基準がここに出ます。編集すると自動保存されます。"></textarea>
       </div>
+    </div>
+  </section>
+
+  <!-- 記録 -->
+  <section class="panel" id="panel-records">
+    <div class="content">
+      <div class="field-row">
+        <select class="input" id="records-filter"></select>
+        <button class="btn btn-ghost btn-sm" id="records-reload">再読込</button>
+        <button class="btn btn-ghost btn-sm" id="records-csv">CSVで書き出す</button>
+        <span class="status" id="records-status"></span>
+      </div>
+      <div id="records-summary" class="breakdown"></div>
+      <div class="table-wrap">
+        <table class="records" id="records-table"></table>
+      </div>
+      <p class="hint">行をクリックすると、その回の会話と減点の内訳が開きます。CSVはExcel・スプレッドシートでそのまま開けます。</p>
     </div>
   </section>
 

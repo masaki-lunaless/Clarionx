@@ -293,3 +293,27 @@ dialog .row { margin-top: 12px; }
 .fb-row p { margin: 4px 0 0; font-size: .86rem; }
 
 #run-mode-detail { display: block; }
+
+/* 採点（減点法） */
+.breakdown { display: flex; gap: 12px; flex-wrap: wrap; font-size: .82rem; color: var(--ink-2); margin-bottom: 8px; }
+.outcome { font-weight: 600; padding: 1px 8px; border-radius: 99px; }
+.outcome.closed { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.outcome.unclosed { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }
+.deduction { color: var(--error); font-variant-numeric: tabular-nums; font-size: .85rem; }
+.deduction.zero { color: var(--ok); }
+
+/* 記録（スプレッドシート風の一覧） */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+table.records { border-collapse: collapse; width: 100%; font-size: .84rem; white-space: nowrap; }
+table.records th, table.records td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+table.records th { background: var(--surface-2); font-weight: 600; font-size: .78rem; color: var(--ink-2); position: sticky; top: 0; }
+table.records tbody tr { cursor: pointer; }
+table.records tbody tr:hover { background: var(--surface-2); }
+table.records td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.records tr.detail-row > td { white-space: normal; background: var(--surface-2); cursor: default; }
+.detail-convo { max-height: 320px; overflow-y: auto; margin-bottom: 10px; }
+.detail-convo p { margin: 2px 0; font-size: .82rem; }
+.detail-convo .who { color: var(--ink-2); }
+.pill { padding: 1px 7px; border-radius: 99px; font-size: .74rem; font-weight: 600; }
+.pill.yes { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.no { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }

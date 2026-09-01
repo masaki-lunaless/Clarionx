@@ -58,6 +58,7 @@ $$('.tab').forEach((tab) =>
     $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${tab.dataset.tab}`));
     if (tab.dataset.tab === 'practice') await refreshModes();
     if (tab.dataset.tab === 'merge') await refreshMerge();
+    if (tab.dataset.tab === 'records') await refreshRecords();
   }),
 );
 
@@ -373,14 +374,20 @@ $('#score-run').addEventListener('click', async (e) => {
 });
 
 function renderScore(s) {
+  const b = s.breakdown || {};
   $('#score-result').innerHTML = `
     <div class="card score">
       <header class="card-head"><span class="total">${esc(s.total)}<small>/100</small></span><h3>${esc(s.headline)}</h3></header>
+      <div class="breakdown">
+        <span class="outcome ${b.closed ? 'closed' : 'unclosed'}">${b.closed ? '成約' : '不成約'} ${b.closePenalty ? `−${b.closePenalty}` : '±0'}</span>
+        <span>型の不一致 −${esc(b.axisPenalty ?? 0)}（上限−${esc(b.maxAxisPenalty ?? 90)}）</span>
+      </div>
+      ${s.closed_evidence ? `<p class="evidence">${esc(s.closed_evidence)}</p>` : ''}
       <div class="axes">
         ${(s.per_axis || [])
           .map(
             (a) => `<div class="axis">
-              <div class="axis-head"><strong>${esc(a.axis)}</strong><span class="stars">${'★'.repeat(Math.round(a.score))}${'☆'.repeat(Math.max(0, 5 - Math.round(a.score)))}</span></div>
+              <div class="axis-head"><strong>${esc(a.axis)}</strong><span class="deduction ${a.deduction ? '' : 'zero'}">${a.deduction ? `−${esc(a.deduction)}` : '減点なし'}</span></div>
               <p class="evidence">${esc(a.evidence)}</p>
               <p class="advice">→ ${esc(a.advice)}</p>
             </div>`,
@@ -568,6 +575,110 @@ $('#mode-dialog').addEventListener('close', async () => {
       return null;
     });
   if (out) await refreshModes();
+});
+
+/* --------------------------------- 記録 ---------------------------------- */
+
+let records = [];
+
+const OUTCOME = (r) => (r.score ? (r.score.breakdown?.closed ? '成約' : '不成約') : '—');
+const fbLabel = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value === v)?.label || '';
+const typeLabel = (id) => config.customerTypes.find((t) => t.id === id)?.label || id || '';
+const when = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
+
+async function refreshRecords() {
+  await refreshCriteria();
+  const sel = $('#records-filter');
+  const keep = sel.value;
+  sel.innerHTML = ['<option value="">すべての判断基準</option>',
+    ...criteriaList.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`)].join('');
+  if (keep) sel.value = keep;
+
+  const data = await run(null, $('#records-status'), '読み込み中…', () => api.listRuns(sel.value || undefined));
+  if (!data) return;
+  records = data.runs;
+  renderRecords();
+}
+
+$('#records-filter').addEventListener('change', refreshRecords);
+$('#records-reload').addEventListener('click', refreshRecords);
+
+function renderRecords() {
+  const scored = records.filter((r) => r.score);
+  const closed = scored.filter((r) => r.score.breakdown?.closed).length;
+  const avg = scored.length ? Math.round(scored.reduce((n, r) => n + r.score.total, 0) / scored.length) : 0;
+  $('#records-summary').innerHTML = records.length
+    ? `<span>${records.length}件（採点済み${scored.length}件）</span>
+       <span>成約 ${closed}／${scored.length}${scored.length ? `（${Math.round((closed / scored.length) * 100)}%）` : ''}</span>
+       <span>平均 ${avg}点</span>`
+    : '';
+
+  const head = ['日時', '実施者', 'モード', '客タイプ', '成約', '総合', '型の減点', '発話', '客の再現度', '採点の納得感', 'コメント'];
+  $('#records-table').innerHTML = `
+    <thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${records
+      .map(
+        (r) => `<tr data-id="${r.id}">
+          <td>${esc(when(r.created_at))}</td>
+          <td>${esc(r.trainee || '—')}</td>
+          <td>${esc(r.mode_name || '—')}</td>
+          <td>${esc(typeLabel(r.customer_type))}</td>
+          <td>${r.score ? `<span class="pill ${r.score.breakdown?.closed ? 'yes' : 'no'}">${OUTCOME(r)}</span>` : '—'}</td>
+          <td class="num">${r.score ? esc(r.score.total) : '—'}</td>
+          <td class="num">${r.score ? `−${esc(r.score.breakdown?.axisPenalty ?? 0)}` : '—'}</td>
+          <td class="num">${r.history.length}</td>
+          <td>${esc(fbLabel('realism', r.fb_realism))}</td>
+          <td>${esc(fbLabel('scoring', r.fb_scoring))}</td>
+          <td>${esc((r.fb_note || '').slice(0, 30))}</td>
+        </tr>`,
+      )
+      .join('')}</tbody>`;
+}
+
+// 行をクリックしたら会話と減点の内訳を開く
+$('#records-table').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  const open = tr.nextElementSibling?.classList.contains('detail-row');
+  $$('.detail-row').forEach((el) => el.remove());
+  if (open) return;
+  const r = records.find((x) => x.id === tr.dataset.id);
+  const detail = document.createElement('tr');
+  detail.className = 'detail-row';
+  detail.innerHTML = `<td colspan="11">
+    <div class="detail-convo">${r.history
+      .map((m) => `<p><span class="who">${m.role === 'trainee' ? '店員' : '客　'}：</span>${esc(m.text)}</p>`)
+      .join('')}</div>
+    ${r.score ? `<p><strong>${esc(r.score.headline)}</strong></p>
+      ${r.score.closed_evidence ? `<p class="evidence">${esc(r.score.closed_evidence)}</p>` : ''}
+      <div class="axes">${(r.score.per_axis || [])
+        .map((a) => `<div class="axis"><div class="axis-head"><strong>${esc(a.axis)}</strong>
+          <span class="deduction ${a.deduction ? '' : 'zero'}">${a.deduction ? `−${esc(a.deduction)}` : '減点なし'}</span></div>
+          <p class="evidence">${esc(a.evidence)}</p><p class="advice">→ ${esc(a.advice)}</p></div>`)
+        .join('')}</div>` : '<p class="hint">この回は採点されていません。</p>'}
+    ${r.fb_note ? `<p class="hint">フィードバック：${esc(r.fb_note)}</p>` : ''}
+  </td>`;
+  tr.after(detail);
+});
+
+$('#records-csv').addEventListener('click', () => {
+  const head = ['日時', '実施者', 'モード', '判断基準', '客タイプ', '成約', '総合点', '型の減点', '発話数', '客の再現度', '採点の納得感', 'コメント', '総評'];
+  const rows = records.map((r) => [
+    when(r.created_at), r.trainee, r.mode_name, r.criteria_title, typeLabel(r.customer_type),
+    r.score ? OUTCOME(r) : '', r.score?.total ?? '', r.score?.breakdown?.axisPenalty ?? '',
+    r.history.length, fbLabel('realism', r.fb_realism), fbLabel('scoring', r.fb_scoring),
+    r.fb_note, r.score?.headline ?? '',
+  ]);
+  const csv = [head, ...rows]
+    .map((row) => row.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\r\n');
+  // Excelで文字化けしないようBOMを付ける
+  const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `clarion-records-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 
 /* ------------------------------ 録音・再生 ------------------------------ */

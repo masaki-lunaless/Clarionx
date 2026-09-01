@@ -24,6 +24,36 @@ import {
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // Whisper APIの上限
 const MAX_TRANSCRIPT_CHARS = 60000;
 
+// 採点の配点。成約は二値の固定ポイント、残りは判断基準に沿えなかった分の減点。
+// 現場の重みに合わせて変えるのはこの2つだけでよい。
+export const SCORING = {
+  unclosedPenalty: 30, // 不成約なら引く点（成約していれば0）
+  maxAxisPenalty: 70,  // 型の不一致で引ける上限。軸数で按分する
+};
+
+/**
+ * 減点法で総合点を出す。
+ * AIには軸ごとの減点幅（0〜10）と成約の二値判定だけを任せ、合計はここで決める。
+ * 採点のたびに配点が揺れないようにするため。
+ */
+export function computeTotal(score) {
+  const axes = score.per_axis || [];
+  const cap = axes.length * 10;
+  const raw = axes.reduce((sum, a) => sum + Math.min(10, Math.max(0, Number(a.deduction) || 0)), 0);
+  const axisPenalty = cap ? Math.round((raw / cap) * SCORING.maxAxisPenalty) : 0;
+  const closePenalty = score.closed ? 0 : SCORING.unclosedPenalty;
+  return {
+    ...score,
+    total: Math.max(0, 100 - closePenalty - axisPenalty),
+    breakdown: {
+      closed: Boolean(score.closed),
+      closePenalty,
+      axisPenalty,
+      maxAxisPenalty: SCORING.maxAxisPenalty,
+    },
+  };
+}
+
 /* -------------------------------- 共通処理 -------------------------------- */
 
 function corsHeaders(request, env) {
@@ -433,8 +463,14 @@ const routes = [
       if (!run) throw new ApiError(404, '実施記録が見つかりません');
       if (!run.history.length) throw new ApiError(400, '会話がありません');
       const criteria = await db.getCriteria(env, auth.client, run.criteria_id);
-      const req = scoringRequest({ history: run.history, criteria: criteria.markdown });
-      const score = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000 });
+      const mode = run.mode_id ? await db.getMode(env, auth.client, run.mode_id).catch(() => null) : null;
+      const req = scoringRequest({
+        history: run.history,
+        criteria: criteria.markdown,
+        customerType: mode?.customer_type,
+      });
+      const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000 });
+      const score = computeTotal(raw);
       await db.saveRun(env, auth.client, params.id, { score });
       return { score };
     },

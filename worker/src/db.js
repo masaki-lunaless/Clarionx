@@ -332,11 +332,11 @@ export async function saveFeedback(env, client, id, { realism, scoring, note }) 
 }
 
 export async function listRuns(env, client, { criteriaId, limit = 100 } = {}) {
+  const cols = `r.*, m.name AS mode_name, m.customer_type, cr.title AS criteria_title`;
+  const joins = `FROM runs r LEFT JOIN modes m ON m.id = r.mode_id LEFT JOIN criteria cr ON cr.id = r.criteria_id`;
   const sql = criteriaId
-    ? `SELECT r.*, m.name AS mode_name FROM runs r LEFT JOIN modes m ON m.id = r.mode_id
-        WHERE r.client = ? AND r.criteria_id = ? ORDER BY r.created_at DESC LIMIT ?`
-    : `SELECT r.*, m.name AS mode_name FROM runs r LEFT JOIN modes m ON m.id = r.mode_id
-        WHERE r.client = ? ORDER BY r.created_at DESC LIMIT ?`;
+    ? `SELECT ${cols} ${joins} WHERE r.client = ? AND r.criteria_id = ? ORDER BY r.created_at DESC LIMIT ?`
+    : `SELECT ${cols} ${joins} WHERE r.client = ? ORDER BY r.created_at DESC LIMIT ?`;
   const stmt = criteriaId
     ? db(env).prepare(sql).bind(client, criteriaId, limit)
     : db(env).prepare(sql).bind(client, limit);

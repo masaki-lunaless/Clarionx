@@ -1,6 +1,6 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
-import worker, { stripStageDirections } from '../src/index.js';
+import worker, { SCORING, computeTotal, stripStageDirections } from '../src/index.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -123,7 +123,8 @@ globalThis.fetch = async (url, init = {}) => {
           axes: [{ name: 'A', principle: 'P', signals: ['s'], actions: ['a'], ng: ['n'], quotes: ['「原文」'] }],
           gaps: ['g'],
         },
-        record_score: { total: 80, headline: 'h', per_axis: [], good: [], next: [] },
+        record_score: { closed: true, closed_evidence: '「お願いします」', headline: 'h',
+          per_axis: [{ axis: 'A', deduction: 2, evidence: 'e', advice: 'a' }], good: [], next: [] },
         record_follow_up: { enough: false, reason: 'まだ浅い', questions: ['もう一段の質問'] },
       }[name];
       return new Response(JSON.stringify({ content: [{ type: 'tool_use', name, input: payload }] }), { status: 200 });
@@ -230,8 +231,21 @@ form.append('payload', JSON.stringify({}));
 const audioTurn = await (await worker.fetch(new Request('https://w.dev/api/runs/run1/turn', { method: 'POST', headers: { 'x-clarion-token': 'secret-token' }, body: form }), env)).json();
 check('turn: 音声からも受け付ける', audioTurn.transcript === 'こんにちは', JSON.stringify(audioTurn).slice(0, 120));
 
+// 期待値は配点の定数から導く（SCORINGを変えてもテストが壊れないように）
+const { unclosedPenalty: UP, maxAxisPenalty: AP } = SCORING;
+const expect = (closed, ratio) => 100 - (closed ? 0 : UP) - Math.round(ratio * AP);
+
 const scored = await (await post('/api/runs/run1/score', {})).json();
-check('score: 採点結果を返す', scored.score.total === 80);
+check('score: 成約かつ減点2割', scored.score.total === expect(true, 0.2), JSON.stringify(scored.score.breakdown));
+
+// --- 採点の計算（減点法） ---
+check('採点: 型が完璧かつ成約で満点', computeTotal({ closed: true, per_axis: [{ deduction: 0 }, { deduction: 0 }] }).total === 100);
+check(`採点: 不成約は固定${UP}点減`, computeTotal({ closed: false, per_axis: [{ deduction: 0 }] }).total === 100 - UP);
+check(`採点: 型が全滅なら${AP}点減`, computeTotal({ closed: true, per_axis: [{ deduction: 10 }, { deduction: 10 }] }).total === 100 - AP);
+check('採点: 最悪でも0で止まる', computeTotal({ closed: false, per_axis: [{ deduction: 10 }] }).total === Math.max(0, 100 - UP - AP));
+check('採点: 軸数が違っても上限は同じ', computeTotal({ closed: true, per_axis: Array(9).fill({ deduction: 10 }) }).total === 100 - AP);
+check('採点: 成約していれば成約分の減点はない', computeTotal({ closed: true, per_axis: [{ deduction: 10 }] }).breakdown.closePenalty === 0);
+check('採点: 範囲外の減点は丸める', computeTotal({ closed: true, per_axis: [{ deduction: 99 }, { deduction: -5 }] }).total === expect(true, 0.5));
 
 check('feedback: 保存できる', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'off', scoring: 'agree', note: '客が素直すぎる' }) })).status === 200);
 check('feedback: 不正な値は400', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'とても良い' }) })).status === 400);

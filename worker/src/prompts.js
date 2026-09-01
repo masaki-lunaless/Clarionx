@@ -2,21 +2,22 @@
 // という整理に従い、質問生成のプロンプトを最も厚く書いてある。
 
 // voice: 読み上げの演技指示（OpenAI TTSのinstructions）、intensity: 感情の強さ（Aivisのemotional_intensity）
+// goal: この客タイプにおける「成約」の判定基準。採点で二値の固定ポイントを出すのに使う
 export const CUSTOMER_TYPES = [
   { id: 'undecided', label: '迷い客', hint: '欲しい気持ちはあるが決め手がなく、質問が多い。急かされると引く。',
-    voice: '日本語で、迷いながら話す客。語尾を伸ばし気味に、考え込む間を取って', intensity: 1 },
+    voice: '日本語で、迷いながら話す客。語尾を伸ばし気味に、考え込む間を取って', intensity: 1, goal: '客がその場で購入・売却を決めた。または次回の来店日を具体的に約束した' },
   { id: 'price', label: '価格重視', hint: '真っ先に値段を聞く。他店比較を口にする。値引きを引き出そうとする。',
-    voice: '日本語で、値段の話になると少し前のめりになる客。早口で、探るような調子で', intensity: 1.1 },
+    voice: '日本語で、値段の話になると少し前のめりになる客。早口で、探るような調子で', intensity: 1.1, goal: '客が値引き以外の理由に納得して購入・売却を決めた' },
   { id: 'silent', label: '寡黙', hint: '相槌は打つが自分からは話さない。短い返事しか返さない。見ているだけ、と言いがち。',
-    voice: '日本語で、口数の少ない客。抑揚を抑えて、そっけなく短く', intensity: 0.6 },
+    voice: '日本語で、口数の少ない客。抑揚を抑えて、そっけなく短く', intensity: 0.6, goal: '客が自分から要望を口にし、購入・売却を決めた' },
   { id: 'expert', label: '知識豊富', hint: '下調べ済み。スペックや相場を把握しており、店員を試す質問をする。',
-    voice: '日本語で、知識のある客。落ち着いた低めの調子で、試すように', intensity: 0.9 },
+    voice: '日本語で、知識のある客。落ち着いた低めの調子で、試すように', intensity: 0.9, goal: '客が店員の見立てを認め、購入・売却を決めた' },
   { id: 'complaint', label: '不満・クレーム気味', hint: '過去の対応や査定額に納得がいっていない。最初は語気が強い。',
-    voice: '日本語で、納得していない客。語気を強めて、苛立ちをにじませて', intensity: 1.5 },
+    voice: '日本語で、納得していない客。語気を強めて、苛立ちをにじませて', intensity: 1.5, goal: '客の不満が解消され、購入・売却を決めた。または改めて来店する意思を示した' },
   { id: 'kaitori', label: '買取相談', hint: '売るつもりはあるが金額次第。他店の査定額を持っている。思い入れのある品。',
-    voice: '日本語で、手放すか迷っている客。少し名残惜しそうに、慎重に', intensity: 1.1 },
+    voice: '日本語で、手放すか迷っている客。少し名残惜しそうに、慎重に', intensity: 1.1, goal: '客が査定額に納得して、その場で売却を決めた' },
   { id: 'accompanied', label: '同伴者あり', hint: '家族や友人と一緒。決定権が本人だけにない。同伴者の一言で気持ちが動く。',
-    voice: '日本語で、連れの様子をうかがいながら話す客。会話の相手が二人いるような調子で', intensity: 1 },
+    voice: '日本語で、連れの様子をうかがいながら話す客。会話の相手が二人いるような調子で', intensity: 1, goal: '同伴者を含めて合意し、購入・売却を決めた' },
   {
     id: 'showoff',
     label: '見せに来ただけ',
@@ -29,7 +30,7 @@ export const CUSTOMER_TYPES = [
 今日売ることはまずない。ただし、扱いが良ければ他に持っている物の話を自分から始める。`,
     style: '自分の話をしたくて来ているので、1発話が4〜6文と長めになる。相手に質問を返すより、自分の見立てや入手経緯を語る',
     voice: '日本語で、自慢したくて来ている客。少し得意げに、饒舌に、間を置かず',
-    intensity: 1.2,
+    intensity: 1.2, goal: '売る気のない客なので、その場の売却は上振れ。他に持っている品の話を客が自分から始めた、または再来店を約束したら成約とみなす',
   },
 ];
 
@@ -260,45 +261,67 @@ ${scenario ? `\n【場面設定】\n${scenario}` : ''}
 ${criteria ? `【参考：この店のトップ人材の判断基準（あなたは客なのでこれを口に出さない。相手がこれに沿った対応をしたときに自然に反応が良くなる、という基準としてのみ使う）】\n${criteria}` : ''}`;
 }
 
-export function scoringRequest({ history, criteria }) {
-  const convo = history
-    .map((m) => `${m.role === 'trainee' ? '店員' : '客'}：${m.text}`)
-    .join('\n');
+export function scoringRequest({ history, criteria, customerType }) {
+  const convo = history.map((m) => `${m.role === 'trainee' ? '店員' : '客'}：${m.text}`).join('\n');
+  const type = CUSTOMER_TYPES.find((t) => t.id === customerType);
 
   return {
-    system: `あなたは接客ロープレの評価者です。トップ人材の判断基準ドキュメントを唯一の評価軸として採点します。
-一般論の接客マナーで加点減点しないでください。ドキュメントに書かれた軸だけを使います。
-根拠には必ず、会話中の実際の発言を引用してください。`,
+    system: `あなたは接客ロープレの評価者です。減点法で評価します。
+
+【評価の構造】
+- 成約したかどうかは、この客タイプの成果の定義で二値判定する（部分点なし）
+- それ以外はすべて減点法。満点の状態から、判断基準に沿えていなかった分だけ引く
+- 判断基準ドキュメントに書かれた軸だけを使う。一般論の接客マナーで減点しない
+- 根拠には必ず、会話中の実際の発言を引用する
+
+【減点の付け方】各軸につき0〜10で、引く点を決める
+- 0  … 判断基準どおりに実行できている
+- 2  … おおむね実行できているが、詰めが甘い箇所がある
+- 5  … 部分的にしかできていない
+- 8  … ほとんどできていない
+- 10 … 判断基準の「やらない」に該当することをしている、または全く実行されていない
+- その軸の合図（客の言動）がそもそも会話に現れていない場合は、0にする。
+  発動していない軸で減点してはいけない`,
     messages: [
       {
         role: 'user',
-        content: `【判断基準ドキュメント】\n${criteria}\n\n【ロープレ会話】\n${convo}\n\n上記を採点してください。`,
+        content: `【この客タイプにおける成約の定義】
+${type?.goal || '客が購入・売却を決めた'}
+
+【判断基準ドキュメント】
+${criteria}
+
+【ロープレ会話】
+${convo}
+
+上記を評価してください。`,
       },
     ],
     toolName: 'record_score',
-    toolDescription: 'ロープレの採点結果を記録する',
+    toolDescription: 'ロープレの評価結果を記録する',
     schema: {
       type: 'object',
       properties: {
-        total: { type: 'number', description: '総合点（100点満点）' },
+        closed: { type: 'boolean', description: '上の「成約の定義」を満たしたか' },
+        closed_evidence: { type: 'string', description: 'そう判断した根拠。会話からの引用を含める' },
         headline: { type: 'string', description: '総評を一文で' },
         per_axis: {
           type: 'array',
           items: {
             type: 'object',
             properties: {
-              axis: { type: 'string' },
-              score: { type: 'number', description: '5点満点' },
+              axis: { type: 'string', description: '判断基準ドキュメントの軸の名前' },
+              deduction: { type: 'number', description: '引く点。0〜10。合図が出ていない軸は0' },
               evidence: { type: 'string', description: '会話からの引用を含む根拠' },
               advice: { type: 'string', description: '次に試す具体的な一言・動き' },
             },
-            required: ['axis', 'score', 'evidence', 'advice'],
+            required: ['axis', 'deduction', 'evidence', 'advice'],
           },
         },
         good: { type: 'array', items: { type: 'string' }, description: '良かった点' },
         next: { type: 'array', items: { type: 'string' }, description: '次回の練習で意識する点（3つまで）' },
       },
-      required: ['total', 'headline', 'per_axis', 'good', 'next'],
+      required: ['closed', 'closed_evidence', 'headline', 'per_axis', 'good', 'next'],
     },
   };
 }
