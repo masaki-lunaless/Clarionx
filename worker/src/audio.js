@@ -157,12 +157,12 @@ function toDataUri(buffer, mime) {
   return `data:${mime};base64,${btoa(binary)}`;
 }
 
-/** 実際に使うプロバイダを決める。明示指定 > 鍵のある方 > なし */
+/** 実際に使うプロバイダを決める。明示指定 > 鍵のある方（openai優先） > なし */
 export function activeProvider(env) {
   const named = (env.TTS_PROVIDER || '').trim().toLowerCase();
   if (named === 'none') return null;
   if (named) return PROVIDERS[named]?.enabled(env) ? named : null;
-  return ['aivis', 'openai'].find((name) => PROVIDERS[name].enabled(env)) || null;
+  return ['openai', 'aivis'].find((name) => PROVIDERS[name].enabled(env)) || null;
 }
 
 /**

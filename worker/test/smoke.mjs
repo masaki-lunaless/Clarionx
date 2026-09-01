@@ -68,8 +68,9 @@ check('未許可オリジンは弾く', bad.headers.get('access-control-allow-or
 
 // 各ルート
 const cfg = await (await call('/api/config')).json();
-check('config: 客タイプと声', cfg.customerTypes.length > 0 && cfg.voices.length === 2, JSON.stringify(cfg.voices));
-check('config: 鍵があればaivisを自動選択', cfg.tts === 'aivis', String(cfg.tts));
+check('config: 客タイプを返す', cfg.customerTypes.length > 0);
+check('config: 既定はopenai', cfg.tts === 'openai', String(cfg.tts));
+check('config: openaiの組み込みボイス一覧', cfg.voices.length === 11, String(cfg.voices.length));
 check('config: 演技指示は外に出さない', !JSON.stringify(cfg.customerTypes).includes('voice'), JSON.stringify(cfg.customerTypes[0]));
 
 const q = await (await call('/api/questions', { method: 'POST', body: JSON.stringify({ transcript: '店員：…' }) })).json();
@@ -81,10 +82,10 @@ check('questions: 空は400', empty.status === 400);
 const c = await (await call('/api/criteria', { method: 'POST', body: JSON.stringify({ qa: [{ question: 'q', answer: 'a' }] }) })).json();
 check('criteria: markdown生成', c.markdown.includes('## 1. A') && c.markdown.includes('> 「原文」'), c.markdown);
 
-const t = await (await call('/api/roleplay/turn', { method: 'POST', body: JSON.stringify({ text: 'いらっしゃいませ', history: [], customerType: 'kaitori' }) })).json();
+const t = await (await call('/api/roleplay/turn', { method: 'POST', body: JSON.stringify({ text: 'いらっしゃいませ', history: [], customerType: 'complaint' }) })).json();
 check('turn: 返答と音声(data URI)', t.replyText.length > 0 && t.audioUrl?.startsWith('data:audio/mpeg;base64,'), JSON.stringify(t).slice(0, 200));
-check('turn: aivisにBearerとモデルUUIDを渡す', lastTts.auth === 'Bearer test' && lastTts.body.model_uuid === 'model-uuid-1', JSON.stringify(lastTts));
-check('turn: 客タイプの感情強度が乗る', lastTts.body.emotional_intensity === 1.1, String(lastTts.body.emotional_intensity));
+check('turn: openaiの/audio/speechを叩く', lastTts.url.includes('/audio/speech'), lastTts.url);
+check('turn: 客タイプの演技指示を渡す', lastTts.body.instructions.includes('語気を強めて'), lastTts.body.instructions);
 
 const form = new FormData();
 form.append('audio', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mp4' }), 'turn.mp4');
@@ -97,14 +98,14 @@ check('score: 集計', s.total === 80);
 
 check('404', (await call('/api/nope')).status === 404);
 
-// プロバイダ切り替え：openaiを明示すると音声合成もOpenAIに向く
-const openaiEnv = { ...env, TTS_PROVIDER: 'openai' };
-const oa = await (await worker.fetch(new Request('https://w.dev/api/roleplay/turn', { method: 'POST', headers: H, body: JSON.stringify({ text: 'テスト', history: [], customerType: 'complaint' }) }), openaiEnv)).json();
-check('openai: /audio/speech を叩く', lastTts.url.includes('/audio/speech'), lastTts.url);
-check('openai: 客タイプの演技指示を渡す', lastTts.body.instructions.includes('語気を強めて'), lastTts.body.instructions);
-check('openai: 音声が返る', oa.audioUrl?.startsWith('data:audio/mpeg;base64,'));
-const oaCfg = await (await worker.fetch(new Request('https://w.dev/api/config', { headers: H }), openaiEnv)).json();
-check('openai: 組み込みボイス一覧を返す', oaCfg.voices.length === 11 && oaCfg.tts === 'openai', String(oaCfg.voices.length));
+// プロバイダ切り替え：aivisを明示するとそちらに向く
+const aivisEnv = { ...env, TTS_PROVIDER: 'aivis' };
+const av = await (await worker.fetch(new Request('https://w.dev/api/roleplay/turn', { method: 'POST', headers: H, body: JSON.stringify({ text: 'テスト', history: [], customerType: 'price' }) }), aivisEnv)).json();
+check('aivis: Bearerとモデルuuidを渡す', lastTts.auth === 'Bearer test' && lastTts.body.model_uuid === 'model-uuid-1', JSON.stringify(lastTts));
+check('aivis: 客タイプの感情強度が乗る', lastTts.body.emotional_intensity === 1.1, String(lastTts.body.emotional_intensity));
+check('aivis: 音声が返る', av.audioUrl?.startsWith('data:audio/mpeg;base64,'));
+const avCfg = await (await worker.fetch(new Request('https://w.dev/api/config', { headers: H }), aivisEnv)).json();
+check('aivis: 設定した声の一覧を返す', avCfg.voices.length === 2 && avCfg.tts === 'aivis', JSON.stringify(avCfg.voices));
 
 // TTSを止める設定
 const muted = await (await worker.fetch(new Request('https://w.dev/api/roleplay/turn', { method: 'POST', headers: H, body: JSON.stringify({ text: 'テスト', history: [] }) }), { ...env, TTS_PROVIDER: 'none' })).json();
@@ -112,7 +113,7 @@ check('TTS_PROVIDER=none なら音声なしで返す', muted.replyText.length > 
 
 // TTS失敗時も会話は続く
 const prev = globalThis.fetch;
-globalThis.fetch = async (url, init) => (String(url).includes('aivis-project') ? new Response('err', { status: 500 }) : prev(url, init));
+globalThis.fetch = async (url, init) => (String(url).includes('/audio/speech') ? new Response('err', { status: 500 }) : prev(url, init));
 const degraded = await (await call('/api/roleplay/turn', { method: 'POST', body: JSON.stringify({ text: 'テスト', history: [] }) })).json();
 check('TTS失敗でもreplyTextは返る', degraded.replyText.length > 0 && degraded.audioUrl === null, JSON.stringify(degraded));
 globalThis.fetch = prev;

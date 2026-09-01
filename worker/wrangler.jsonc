@@ -10,10 +10,11 @@
     // 本番はGitHub PagesのオリジナルURLに絞る。カンマ区切りで複数可。
     "ALLOWED_ORIGINS": "*",
 
-    // TTSプロバイダ: "aivis" | "openai" | "none"。
-    // 空なら鍵のある方を自動で選ぶ（aivis優先、なければopenai）。
+    // TTSプロバイダ: "openai" | "aivis" | "none"。
+    // 既定はopenai（Whisper用のキーで鳴るので追加契約が要らない）。
+    // 日本語の自然さを上げたくなったら "aivis" に変える。
     // 旧にじボイスは2026-02-04にサービス終了したため廃止。
-    "TTS_PROVIDER": "",
+    "TTS_PROVIDER": "openai",
     "TTS_SPEED": "1.0",
 
     // aivis: ダッシュボードで選んだモデルUUIDを既定の声にする

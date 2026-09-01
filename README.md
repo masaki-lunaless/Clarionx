@@ -42,7 +42,7 @@ cd worker
 npm install
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put AIVIS_API_KEY        # 音声合成にAivisを使う場合のみ
+npx wrangler secret put AIVIS_API_KEY        # 音声合成にAivisを使う場合のみ（既定はopenaiなので不要）
 npx wrangler secret put ACCESS_TOKENS   # 例: clientA:長いランダム文字列,clientB:別の文字列
 npx wrangler deploy
 ```
@@ -69,11 +69,12 @@ npx wrangler deploy
 
 | プロバイダ | 設定 | 性格 |
 | --- | --- | --- |
+| `openai`（既定） | `OPENAI_API_KEY`（Whisperと共用） | 追加の契約が要らず、これだけで鳴る。`instructions` で客の演技を指示できる。日本語の自然さは国産勢に一歩劣る |
 | `aivis` | `AIVIS_API_KEY` と `AIVIS_MODEL_UUID` | 日本語ネイティブ。感情表現あり、¥440/万文字。ACMLライセンスのモデルはクレジット表記不要 |
-| `openai` | `OPENAI_API_KEY`（Whisperと共用） | 追加の契約が要らない。`instructions` で客の演技を指示できる。日本語の自然さは国産勢に一歩劣る |
 | `none` | — | 読み上げを止める。フロントは端末の `speechSynthesis` で代替する |
 
-`TTS_PROVIDER` が空なら、鍵のある方を自動で選ぶ（aivis優先）。どちらも失敗したら音声なしで会話だけ続く。
+既定は `openai`。Whisper用に必ず要る `OPENAI_API_KEY` だけで鳴るので、音声のために別の契約をしなくてよい。
+日本語の読み上げの質を上げたくなった時点で `TTS_PROVIDER` を `aivis` に変える。失敗したら音声なしで会話だけ続く。
 客タイプごとの読み上げの演技指示は `worker/src/prompts.js` の `CUSTOMER_TYPES`（`voice` と `intensity`）にある。
 不満客なら語気を強める、寡黙な客なら抑揚を抑える、といった調整はここ。
 
