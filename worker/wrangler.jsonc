@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clarion-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // 本番はGitHub PagesのオリジナルURLに絞る。カンマ区切りで複数可。
+    "ALLOWED_ORIGINS": "*",
+    "NIJIVOICE_VOICE_ACTOR_ID": "",
+    "NIJIVOICE_SPEED": "1.0"
+  }
+  // secrets（wrangler secret put で設定、コードにもGitにも置かない）:
+  //   ANTHROPIC_API_KEY   … Claude API
+  //   OPENAI_API_KEY      … Whisper API
+  //   NIJIVOICE_API_KEY   … にじボイス API
+  //   ACCESS_TOKENS       … "clientA:xxxx,clientB:yyyy" 形式。未設定だと誰でも叩けるので本番では必須
+}
