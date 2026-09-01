@@ -210,6 +210,9 @@ const adminEnv = { ...env, ADMIN_TOKENS: 'admin-only-token' };
 check('統合は管理者限定にできる', (await post('/api/criteria', { caseIds: ['case1'] }, adminEnv)).status === 403);
 check('管理者トークンなら通る', (await worker.fetch(new Request('https://w.dev/api/criteria', { method: 'POST', headers: { ...H, 'x-clarion-token': 'admin-only-token' }, body: JSON.stringify({ caseIds: ['case1'] }) }), { ...adminEnv, ACCESS_TOKENS: 'clientA:admin-only-token' })).status === 200);
 check('未設定ならフルオープン', (await (await call('/api/config')).json()).admin === true);
+check('管理者を絞ると案件削除も止まる', (await call('/api/cases/case1', { method: 'DELETE' }, adminEnv)).status === 403);
+check('管理者を絞るとモード削除も止まる', (await call('/api/modes/mode1', { method: 'DELETE' }, adminEnv)).status === 403);
+check('未設定なら削除できる', (await call('/api/cases/case1', { method: 'DELETE' })).status === 200);
 
 // --- 2. ロープレ ---
 const modeList = await (await call('/api/modes')).json();

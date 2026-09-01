@@ -125,6 +125,12 @@ function requireAdmin(auth) {
   if (!auth.admin) throw new ApiError(403, 'この操作は管理者のみです');
 }
 
+// 管理者を絞ると、統合（ステップ3）と削除が管理者だけになる。
+// ADMIN_TOKENS に入れるトークンは、ACCESS_TOKENS にも「同じラベル」で登録すること。
+// ラベルが違うとデータの持ち主が別扱いになり、管理者から他の人のデータが見えなくなる。
+//   例) ACCESS_TOKENS = "clarion:みんなの共有トークン,clarion:管理者トークン"
+//       ADMIN_TOKENS  = "管理者トークン"
+
 async function readBody(request) {
   const type = request.headers.get('content-type') || '';
   if (type.includes('multipart/form-data')) {
@@ -229,6 +235,7 @@ const routes = [
     'DELETE',
     '/api/cases/:id',
     async ({ env, auth, params }) => {
+      requireAdmin(auth); // 回答ごと消えるため
       await db.deleteCase(env, auth.client, params.id);
       return { ok: true };
     },
@@ -405,6 +412,7 @@ const routes = [
     'DELETE',
     '/api/modes/:id',
     async ({ env, auth, params }) => {
+      requireAdmin(auth);
       await db.deleteMode(env, auth.client, params.id);
       return { ok: true };
     },
