@@ -7,6 +7,7 @@ import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
 import {
   CUSTOMER_TYPES,
   criteriaRequest,
+  fillQuestionsRequest,
   followUpRequest,
   roleplaySystemPrompt,
   scoringRequest,
@@ -130,8 +131,30 @@ const routes = {
   'POST /api/questions': async (body, request, env) => {
     const transcript = requireString(body.transcript, 'transcript');
     const req = turningPointsRequest({ transcript, context: body.context });
-    const out = await generateStructured(env, { ...req, model: MODELS.analysis });
-    return json({ turningPoints: out.turning_points || [] }, request, env);
+    const out = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 6000 });
+    const points = (out.turning_points || []).filter((p) => p && p.quote);
+
+    // スキーマのrequiredは厳密には強制されないため、questionsが欠けることがある。
+    // 転換点自体は使えるので、欠けた分だけ埋め直す（全体をやり直すより速く安い）。
+    const missing = points.filter((p) => !(p.questions || []).length);
+    if (missing.length) {
+      console.warn(`questions missing for ${missing.length}/${points.length} turning points; repairing`);
+      try {
+        const repair = await generateStructured(env, {
+          ...fillQuestionsRequest({ transcript, points: missing }),
+          model: MODELS.analysis,
+          maxTokens: 3000,
+        });
+        for (const item of repair.items || []) {
+          const target = missing[item.index];
+          if (target && (item.questions || []).length) target.questions = item.questions;
+        }
+      } catch (err) {
+        console.warn('question repair failed', err?.message || err);
+      }
+    }
+
+    return json({ turningPoints: points.filter((p) => (p.questions || []).length) }, request, env);
   },
 
   // ② 追加で掘る質問

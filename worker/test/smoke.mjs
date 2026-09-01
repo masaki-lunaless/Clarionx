@@ -13,6 +13,7 @@ const env = {
 
 const calls = [];
 let lastTts = null;
+let brokenTurningPoints = false;
 globalThis.fetch = async (url, init = {}) => {
   calls.push(String(url));
   const u = String(url);
@@ -21,7 +22,10 @@ globalThis.fetch = async (url, init = {}) => {
     if (body.tools) {
       const name = body.tools[0].name;
       const payload = {
-        record_turning_points: { turning_points: [{ quote: 'q', label: 'l', why: 'w', questions: ['a', 'b'] }] },
+        record_turning_points: brokenTurningPoints
+          ? { turning_points: [{ quote: 'q1', label: 'l1', why: 'w1' }, { quote: 'q2', label: 'l2', why: 'w2', questions: ['x', 'y'] }] }
+          : { turning_points: [{ quote: 'q', label: 'l', why: 'w', questions: ['a', 'b'] }] },
+        record_questions: { items: [{ index: 0, questions: ['修復質問1', '修復質問2'] }] },
         record_criteria: { title: 'T', summary: 'S', axes: [{ name: 'A', principle: 'P', signals: ['s'], actions: ['a'], ng: ['n'], quotes: ['「原文」'] }], gaps: ['g'] },
         record_score: { total: 80, headline: 'h', per_axis: [], good: [], next: [] },
         record_follow_up: { enough: true, reason: 'r', questions: [] },
@@ -78,6 +82,14 @@ check('questions: 転換点', q.turningPoints?.[0]?.questions.length === 2, JSON
 
 const empty = await call('/api/questions', { method: 'POST', body: JSON.stringify({}) });
 check('questions: 空は400', empty.status === 400);
+
+// モデルがquestionsを省略した場合、欠けた分だけ埋め直せること
+brokenTurningPoints = true;
+const repaired = await (await call('/api/questions', { method: 'POST', body: JSON.stringify({ transcript: '店員：…' }) })).json();
+brokenTurningPoints = false;
+check('questions: 欠落分を修復する', repaired.turningPoints.length === 2, JSON.stringify(repaired));
+check('questions: 修復した質問が入る', repaired.turningPoints[0].questions?.[0] === '修復質問1', JSON.stringify(repaired.turningPoints[0]));
+check('questions: 元からある分は保持', repaired.turningPoints[1].questions?.[0] === 'x', JSON.stringify(repaired.turningPoints[1]));
 
 const c = await (await call('/api/criteria', { method: 'POST', body: JSON.stringify({ qa: [{ question: 'q', answer: 'a' }] }) })).json();
 check('criteria: markdown生成', c.markdown.includes('## 1. A') && c.markdown.includes('> 「原文」'), c.markdown);

@@ -74,22 +74,67 @@ ${transcript}`,
           items: {
             type: 'object',
             properties: {
-              quote: { type: 'string', description: '書き起こしからの原文抜粋（1〜3発話）' },
               label: { type: 'string', description: 'その転換点の短い見出し（15字以内）' },
-              why: { type: 'string', description: 'なぜここが転換点だと判断したか（観察できる事実ベースで）' },
+              quote: { type: 'string', description: '書き起こしからの原文抜粋（1〜3発話）' },
               questions: {
                 type: 'array',
                 minItems: 2,
                 maxItems: 3,
                 items: { type: 'string' },
-                description: '本人に投げる質問。誘導なし・オープンクエスチョン',
+                description: '【必須】本人に投げる質問。誘導なし・オープンクエスチョン。転換点ごとに必ず2〜3問入れること',
               },
+              why: { type: 'string', description: 'なぜここが転換点だと判断したか。1〜2文で簡潔に' },
             },
-            required: ['quote', 'label', 'why', 'questions'],
+            required: ['label', 'quote', 'questions', 'why'],
           },
         },
       },
       required: ['turning_points'],
+    },
+  };
+}
+
+/**
+ * 転換点の抽出には成功したが questions が欠けた場合の埋め直し。
+ * ツール入力スキーマのrequiredは厳密には強制されず、モデルが省略することがあるため。
+ */
+export function fillQuestionsRequest({ transcript, points }) {
+  const list = points
+    .map((p, i) => `[${i}] ${p.label}\n${p.quote}`)
+    .join('\n\n');
+  return {
+    system: INTERVIEW_SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content: `次の接客の書き起こしから抽出した転換点について、それぞれ本人へのインタビュー質問を2〜3問ずつ作ってください。
+indexは与えられた番号をそのまま使ってください。
+
+【書き起こし】
+${transcript}
+
+【質問を作る転換点】
+${list}`,
+      },
+    ],
+    toolName: 'record_questions',
+    toolDescription: '転換点ごとのインタビュー質問を記録する',
+    schema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              index: { type: 'number', description: '与えられた転換点の番号' },
+              questions: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'string' } },
+            },
+            required: ['index', 'questions'],
+          },
+        },
+      },
+      required: ['items'],
     },
   };
 }
