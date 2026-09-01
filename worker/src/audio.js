@@ -1,8 +1,13 @@
-// 音声入出力：Whisper API（STT）とにじボイスAPI（TTS）。
+// 音声入出力：Whisper API（STT）と、差し替え可能なTTSプロバイダ。
+//
+// 当初はにじボイスAPIを使っていたが、2026年2月4日にサービス終了したため差し替えた。
+// 同じことが起きても1ファイルの差し替えで済むよう、TTSはプロバイダ層として分離してある。
+// 追加するときは PROVIDERS に {synthesize, voices} を持つエントリを足すだけ。
 import { ApiError } from './llm.js';
 
 const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
-const NIJI_BASE = 'https://api.nijivoice.com/api/platform/v1';
+const OPENAI_TTS_URL = 'https://api.openai.com/v1/audio/speech';
+const AIVIS_TTS_URL = 'https://api.aivis-project.com/v1/tts/synthesize';
 
 const EXT_BY_MIME = {
   'audio/webm': 'webm',
@@ -49,54 +54,135 @@ export async function transcribe(env, blob, { prompt, filename } = {}) {
   return (data.text || '').trim();
 }
 
-/**
- * テキスト→音声URL。にじボイスは音声バイナリではなく一時URLを返す仕様。
- * 未設定・失敗時は null を返し、フロント側で speechSynthesis にフォールバックする。
- */
-export async function synthesize(env, text, { voiceActorId, speed, emotionalLevel } = {}) {
-  const key = env.NIJIVOICE_API_KEY;
-  const actor = voiceActorId || env.NIJIVOICE_VOICE_ACTOR_ID;
-  if (!key || !actor || !text) return null;
+/* ------------------------------ TTSプロバイダ ------------------------------ */
 
-  const res = await fetch(`${NIJI_BASE}/voice-actors/${encodeURIComponent(actor)}/generate-voice`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json',
-      'x-api-key': key,
+// OpenAIの声（gpt-4o-mini-ttsの組み込みボイス）
+const OPENAI_VOICES = [
+  { id: 'alloy', name: 'alloy（中性・落ち着き）' },
+  { id: 'ash', name: 'ash（男性・低め）' },
+  { id: 'ballad', name: 'ballad（男性・穏やか）' },
+  { id: 'coral', name: 'coral（女性・明るい）' },
+  { id: 'echo', name: 'echo（男性・硬め）' },
+  { id: 'fable', name: 'fable（中性・語り口）' },
+  { id: 'nova', name: 'nova（女性・快活）' },
+  { id: 'onyx', name: 'onyx（男性・重い）' },
+  { id: 'sage', name: 'sage（女性・静か）' },
+  { id: 'shimmer', name: 'shimmer（女性・柔らかい）' },
+  { id: 'verse', name: 'verse（中性・抑揚あり）' },
+];
+
+const PROVIDERS = {
+  // 日本語ネイティブ。感情表現パラメータあり、ACMLライセンスのモデルはクレジット表記不要。
+  // 声は「モデルUUID」で指定するため、一覧はダッシュボードで選んで環境変数に入れる運用。
+  aivis: {
+    enabled: (env) => Boolean(env.AIVIS_API_KEY),
+    voices: (env) => parseVoiceList(env.AIVIS_VOICES),
+    async synthesize(env, text, { voice, speed, intensity }) {
+      const model = voice || env.AIVIS_MODEL_UUID;
+      if (!model) {
+        console.warn('aivis: AIVIS_MODEL_UUID が未設定');
+        return null;
+      }
+      const res = await fetch(AIVIS_TTS_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${env.AIVIS_API_KEY}` },
+        body: JSON.stringify({
+          model_uuid: model,
+          text: text.slice(0, 3000),
+          output_format: 'mp3',
+          language: 'ja',
+          speaking_rate: clamp(Number(speed || env.TTS_SPEED || 1), 0.5, 2),
+          emotional_intensity: clamp(Number(intensity ?? 1), 0, 2),
+        }),
+      });
+      if (!res.ok) {
+        console.warn('aivis error', res.status, (await res.text()).slice(0, 400));
+        return null;
+      }
+      return toDataUri(await res.arrayBuffer(), 'audio/mpeg');
     },
-    body: JSON.stringify({
-      script: text.slice(0, 3000),
-      speed: String(speed || env.NIJIVOICE_SPEED || '1.0'),
-      format: 'mp3',
-      ...(emotionalLevel === undefined ? {} : { emotionalLevel: String(emotionalLevel) }),
-    }),
-  });
+  },
 
-  if (!res.ok) {
-    // TTSが落ちても会話自体は続けたいので、例外にせず握って null を返す
-    console.warn('nijivoice error', res.status, (await res.text()).slice(0, 400));
-    return null;
-  }
-  const data = await res.json().catch(() => null);
-  const gv = data?.generatedVoice || data;
-  return gv?.audioFileDownloadUrl || gv?.audioFileUrl || null;
+  // Whisperと同じキーで動くので追加の契約が要らない。instructionsで演技を指示できる。
+  openai: {
+    enabled: (env) => Boolean(env.OPENAI_API_KEY),
+    voices: () => OPENAI_VOICES,
+    async synthesize(env, text, { voice, speed, instructions }) {
+      const res = await fetch(OPENAI_TTS_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${env.OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model: env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts',
+          voice: voice || env.OPENAI_TTS_VOICE || 'nova',
+          input: text.slice(0, 3000),
+          response_format: 'mp3',
+          speed: clamp(Number(speed || env.TTS_SPEED || 1), 0.25, 4),
+          ...(instructions ? { instructions } : {}),
+        }),
+      });
+      if (!res.ok) {
+        console.warn('openai tts error', res.status, (await res.text()).slice(0, 400));
+        return null;
+      }
+      return toDataUri(await res.arrayBuffer(), 'audio/mpeg');
+    },
+  },
+};
+
+const clamp = (n, min, max, fallback = 1) => (Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback);
+
+/** "uuid:表示名,uuid:表示名" 形式を声の一覧に開く */
+function parseVoiceList(raw) {
+  return (raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const idx = entry.indexOf(':');
+      return idx === -1 ? { id: entry, name: entry } : { id: entry.slice(0, idx), name: entry.slice(idx + 1) };
+    });
 }
 
-/** 話者一覧（フロントの声選択用） */
-export async function listVoiceActors(env) {
-  const key = env.NIJIVOICE_API_KEY;
-  if (!key) return [];
-  const res = await fetch(`${NIJI_BASE}/voice-actors`, {
-    headers: { accept: 'application/json', 'x-api-key': key },
-  });
-  if (!res.ok) return [];
-  const data = await res.json().catch(() => null);
-  const actors = data?.voiceActors || data?.voice_actors || [];
-  return actors.map((a) => ({
-    id: a.id,
-    name: a.name,
-    gender: a.gender,
-    age: a.age,
-  }));
+/**
+ * 音声バイト列をdata URIにする。
+ * にじボイスは一時URLを返す仕様だったが、現行プロバイダはどちらも生バイトを返すため、
+ * フロントに1レスポンスで渡しきれるdata URIに変換している（1ターン1リクエストの設計を維持）。
+ */
+function toDataUri(buffer, mime) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/** 実際に使うプロバイダを決める。明示指定 > 鍵のある方 > なし */
+export function activeProvider(env) {
+  const named = (env.TTS_PROVIDER || '').trim().toLowerCase();
+  if (named === 'none') return null;
+  if (named) return PROVIDERS[named]?.enabled(env) ? named : null;
+  return ['aivis', 'openai'].find((name) => PROVIDERS[name].enabled(env)) || null;
+}
+
+/**
+ * テキスト→音声のdata URI。
+ * 未設定・失敗時は null を返し、フロント側で speechSynthesis にフォールバックする。
+ * 会話そのものは止めない（TTSが落ちても練習は続けられる）。
+ */
+export async function synthesize(env, text, options = {}) {
+  const name = activeProvider(env);
+  if (!name || !text) return null;
+  try {
+    return await PROVIDERS[name].synthesize(env, text, options);
+  } catch (err) {
+    console.warn(`tts(${name}) failed`, err?.message || err);
+    return null;
+  }
+}
+
+/** 声の一覧（フロントの選択用） */
+export function listVoices(env) {
+  const name = activeProvider(env);
+  return name ? PROVIDERS[name].voices(env) : [];
 }

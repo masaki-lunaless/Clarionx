@@ -3,7 +3,7 @@
 const KEY = 'clarion.v1';
 
 const empty = () => ({
-  settings: { workerUrl: '', token: '', voiceActorId: '', vocabulary: '' },
+  settings: { workerUrl: '', token: '', voice: '', vocabulary: '' },
   sessions: [],
   criteria: [],
   activeCriteriaId: null,

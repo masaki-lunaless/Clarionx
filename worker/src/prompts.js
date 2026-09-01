@@ -1,15 +1,32 @@
 // Clarionの中核。①③④はコモディティ、②のファシリテーション設計だけが差別化要素、
 // という整理に従い、質問生成のプロンプトを最も厚く書いてある。
 
+// voice: 読み上げの演技指示（OpenAI TTSのinstructions）、intensity: 感情の強さ（Aivisのemotional_intensity）
 export const CUSTOMER_TYPES = [
-  { id: 'undecided', label: '迷い客', hint: '欲しい気持ちはあるが決め手がなく、質問が多い。急かされると引く。' },
-  { id: 'price', label: '価格重視', hint: '真っ先に値段を聞く。他店比較を口にする。値引きを引き出そうとする。' },
-  { id: 'silent', label: '寡黙', hint: '相槌は打つが自分からは話さない。短い返事しか返さない。見ているだけ、と言いがち。' },
-  { id: 'expert', label: '知識豊富', hint: '下調べ済み。スペックや相場を把握しており、店員を試す質問をする。' },
-  { id: 'complaint', label: '不満・クレーム気味', hint: '過去の対応や査定額に納得がいっていない。最初は語気が強い。' },
-  { id: 'kaitori', label: '買取相談', hint: '売るつもりはあるが金額次第。他店の査定額を持っている。思い入れのある品。' },
-  { id: 'accompanied', label: '同伴者あり', hint: '家族や友人と一緒。決定権が本人だけにない。同伴者の一言で気持ちが動く。' },
+  { id: 'undecided', label: '迷い客', hint: '欲しい気持ちはあるが決め手がなく、質問が多い。急かされると引く。',
+    voice: '日本語で、迷いながら話す客。語尾を伸ばし気味に、考え込む間を取って', intensity: 1 },
+  { id: 'price', label: '価格重視', hint: '真っ先に値段を聞く。他店比較を口にする。値引きを引き出そうとする。',
+    voice: '日本語で、値段の話になると少し前のめりになる客。早口で、探るような調子で', intensity: 1.1 },
+  { id: 'silent', label: '寡黙', hint: '相槌は打つが自分からは話さない。短い返事しか返さない。見ているだけ、と言いがち。',
+    voice: '日本語で、口数の少ない客。抑揚を抑えて、そっけなく短く', intensity: 0.6 },
+  { id: 'expert', label: '知識豊富', hint: '下調べ済み。スペックや相場を把握しており、店員を試す質問をする。',
+    voice: '日本語で、知識のある客。落ち着いた低めの調子で、試すように', intensity: 0.9 },
+  { id: 'complaint', label: '不満・クレーム気味', hint: '過去の対応や査定額に納得がいっていない。最初は語気が強い。',
+    voice: '日本語で、納得していない客。語気を強めて、苛立ちをにじませて', intensity: 1.5 },
+  { id: 'kaitori', label: '買取相談', hint: '売るつもりはあるが金額次第。他店の査定額を持っている。思い入れのある品。',
+    voice: '日本語で、手放すか迷っている客。少し名残惜しそうに、慎重に', intensity: 1.1 },
+  { id: 'accompanied', label: '同伴者あり', hint: '家族や友人と一緒。決定権が本人だけにない。同伴者の一言で気持ちが動く。',
+    voice: '日本語で、連れの様子をうかがいながら話す客。会話の相手が二人いるような調子で', intensity: 1 },
 ];
+
+/** 客タイプごとの読み上げ演技指示。プロバイダ差はaudio.js側で吸収する。 */
+export function voiceDirection(customerType) {
+  const type = CUSTOMER_TYPES.find((t) => t.id === customerType);
+  return {
+    instructions: type?.voice || '日本語で、店頭にいる一般のお客様として自然に',
+    intensity: type?.intensity ?? 1,
+  };
+}
 
 const INTERVIEW_SYSTEM = `あなたは、接客のトップ人材が持つ暗黙知を本人の言葉で引き出す、熟練のインタビュー設計者です。
 

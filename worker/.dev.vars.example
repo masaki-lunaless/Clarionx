@@ -1,7 +1,11 @@
 # cp .dev.vars.example .dev.vars して埋める（.dev.vars はGitに入れない）
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
-NIJIVOICE_API_KEY=...
-NIJIVOICE_VOICE_ACTOR_ID=
+
+# TTS。どちらか一方でよい（両方あればaivisが優先される）
+AIVIS_API_KEY=
+AIVIS_MODEL_UUID=
+# TTS_PROVIDER=openai      # 明示的に切り替えるとき。"none" で読み上げを止める
+
 ACCESS_TOKENS=dev:local-dev-token
 ALLOWED_ORIGINS=*

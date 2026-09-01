@@ -9,12 +9,24 @@
   "vars": {
     // 本番はGitHub PagesのオリジナルURLに絞る。カンマ区切りで複数可。
     "ALLOWED_ORIGINS": "*",
-    "NIJIVOICE_VOICE_ACTOR_ID": "",
-    "NIJIVOICE_SPEED": "1.0"
+
+    // TTSプロバイダ: "aivis" | "openai" | "none"。
+    // 空なら鍵のある方を自動で選ぶ（aivis優先、なければopenai）。
+    // 旧にじボイスは2026-02-04にサービス終了したため廃止。
+    "TTS_PROVIDER": "",
+    "TTS_SPEED": "1.0",
+
+    // aivis: ダッシュボードで選んだモデルUUIDを既定の声にする
+    "AIVIS_MODEL_UUID": "",
+    // フロントの声選択に出す候補。"uuid:表示名,uuid:表示名" 形式
+    "AIVIS_VOICES": "",
+
+    // openai: 組み込みボイス名（alloy/ash/ballad/coral/echo/fable/nova/onyx/sage/shimmer/verse）
+    "OPENAI_TTS_VOICE": "nova"
   }
   // secrets（wrangler secret put で設定、コードにもGitにも置かない）:
   //   ANTHROPIC_API_KEY   … Claude API
-  //   OPENAI_API_KEY      … Whisper API
-  //   NIJIVOICE_API_KEY   … にじボイス API
+  //   OPENAI_API_KEY      … Whisper API（TTSにopenaiを使う場合は音声合成も兼ねる）
+  //   AIVIS_API_KEY       … Aivis Cloud API（日本語ネイティブのTTSを使う場合）
   //   ACCESS_TOKENS       … "clientA:xxxx,clientB:yyyy" 形式。未設定だと誰でも叩けるので本番では必須
 }

@@ -19,10 +19,11 @@ tools/    監視カメラ映像から音声を抽出する一括変換スクリ�
 | バック | Cloudflare Worker | APIキー隠蔽、クライアント別トークン認証、1リクエストへの集約 |
 | 言語 | Claude API | 転換点抽出・質問生成・判断基準統合・客のセリフ生成・採点 |
 | 音声入力 | Whisper API（OpenAI） | MediaRecorderで録った音声をテキスト化 |
-| 音声出力 | にじボイスAPI | 客のセリフを読み上げ |
+| 音声出力 | Aivis Cloud API ／ OpenAI TTS（差し替え可能） | 客のセリフを読み上げ |
 
-ロープレの1ターンは `録音 → Worker → Whisper → Claude → にじボイス → {transcript, replyText, audioUrl}` を
+ロープレの1ターンは `録音 → Worker → Whisper → Claude → TTS → {transcript, replyText, audioUrl}` を
 1リクエストで返す。直列処理なので1ターン数秒。リアルタイム通話ではなく練習なので許容範囲、という判断。
+`audioUrl` はdata URIで返る（フロント側でBlob URLに変換して再生）。
 
 ## 使い方（3つのタブ）
 
@@ -41,13 +42,13 @@ cd worker
 npm install
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put NIJIVOICE_API_KEY
+npx wrangler secret put AIVIS_API_KEY        # 音声合成にAivisを使う場合のみ
 npx wrangler secret put ACCESS_TOKENS   # 例: clientA:長いランダム文字列,clientB:別の文字列
 npx wrangler deploy
 ```
 
 デプロイ後、`wrangler.jsonc` の `ALLOWED_ORIGINS` をGitHub PagesのURL（例 `https://xxxx.github.io`）に絞る。
-`NIJIVOICE_VOICE_ACTOR_ID` に既定の声を入れておくと、フロントで選ばなくても読み上げが動く。
+音声合成の選び方は次節。
 
 ローカル開発は `cp .dev.vars.example .dev.vars` して値を埋め、`npm run dev`。
 外部APIを叩かない疎通テストは `npm test`。
@@ -60,6 +61,23 @@ npx wrangler deploy
 
 公開したページを開き、**設定**タブで Worker URL とアクセストークンを入れて「接続テスト」。
 トークンは端末のlocalStorageにのみ保存される。iPad/iPhoneのSafariでの利用を想定。
+
+## 音声合成（TTS）の差し替え
+
+当初はにじボイスAPIを使っていたが、**2026年2月4日にサービス終了**したため差し替えた。
+同じことが起きても1ファイルで済むよう、`worker/src/audio.js` の `PROVIDERS` にプロバイダを分離してある。
+
+| プロバイダ | 設定 | 性格 |
+| --- | --- | --- |
+| `aivis` | `AIVIS_API_KEY` と `AIVIS_MODEL_UUID` | 日本語ネイティブ。感情表現あり、¥440/万文字。ACMLライセンスのモデルはクレジット表記不要 |
+| `openai` | `OPENAI_API_KEY`（Whisperと共用） | 追加の契約が要らない。`instructions` で客の演技を指示できる。日本語の自然さは国産勢に一歩劣る |
+| `none` | — | 読み上げを止める。フロントは端末の `speechSynthesis` で代替する |
+
+`TTS_PROVIDER` が空なら、鍵のある方を自動で選ぶ（aivis優先）。どちらも失敗したら音声なしで会話だけ続く。
+客タイプごとの読み上げの演技指示は `worker/src/prompts.js` の `CUSTOMER_TYPES`（`voice` と `intensity`）にある。
+不満客なら語気を強める、寡黙な客なら抑揚を抑える、といった調整はここ。
+
+別のプロバイダを足すときは `PROVIDERS` に `{ enabled, voices, synthesize }` を持つエントリを1つ追加するだけでよい。
 
 ## 音声の準備（監視カメラ映像から）
 
@@ -77,12 +95,12 @@ Whisper APIの上限が1ファイル25MBなので、既定で15分ごとに分�
 
 - **目的外利用の確認**：元々「防犯・監視」目的で録画された音声をAI研修データに転用する形になる。
   録画を保有する側での確認が済むまで、本番データを流さないこと。
-- **にじボイスのクレジット表記**：商用利用時は「にじボイス」または「NIJI Voice」の表記が利用規約で必須。
-  製品化する段階でフッターに入れる。
+- **TTSベンダーへの依存**：にじボイスの終了で一度作り直している。特定の1社に直結させないこと。
+  Aivisのモデルを使う場合、モデルごとのライセンス（ACML以外を選ぶとクレジット表記が要る場合がある）を確認する。
 - **データの置き場所**：現状すべて端末のlocalStorage。顧客ごとにデータを分ける／判断基準を隠す段階になったら、
   Worker側にKVかD1を足してサーバ保存へ移す。認証はすでにクライアント別トークンで入っている。
 - **コスト**：判断基準の統合と採点は精度優先で Opus、ロープレの1ターン生成はレイテンシ優先で Sonnet
-  （`worker/src/llm.js` の `MODELS`）。にじボイスは無料枠が月1,000文字。
+  （`worker/src/llm.js` の `MODELS`）。音声合成は Aivis が¥440/万文字（月額¥1,980の無制限プランもあり）。
 
 ## プロンプトを直す場所
 

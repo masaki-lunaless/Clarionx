@@ -51,5 +51,5 @@ export const api = {
   turn: (payload, audio, filename) =>
     audio ? postForm('/api/roleplay/turn', { audio, payload, filename }) : postJSON('/api/roleplay/turn', payload),
   score: (history, criteria) => postJSON('/api/roleplay/score', { history, criteria }),
-  tts: (text, voiceActorId) => postJSON('/api/tts', { text, voiceActorId }),
+  tts: (text, voice, customerType) => postJSON('/api/tts', { text, voice, customerType }),
 };

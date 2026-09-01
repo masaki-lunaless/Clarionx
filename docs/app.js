@@ -73,12 +73,10 @@ $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
   await withBusy(e.target, el, '接続中…', async () => {
     const cfg = await api.config();
-    voiceActors = cfg.voiceActors || [];
-    customerTypes = cfg.customerTypes || customerTypes;
-    renderPracticeConfig();
+    applyConfig(cfg);
     status(
       el,
-      `接続OK — 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts ? '有効' : '未設定'} / 声:${voiceActors.length}種`,
+      `接続OK — 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${voices.length ? `（声${voices.length}種）` : ''}`,
       'ok',
     );
   }).catch(() => {});
@@ -494,8 +492,14 @@ let customerTypes = [
   { id: 'kaitori', label: '買取相談' },
   { id: 'accompanied', label: '同伴者あり' },
 ];
-let voiceActors = [];
+let voices = [];
 let run = null; // { criteriaId, customerType, scenario, history: [] }
+
+function applyConfig(cfg) {
+  voices = cfg.voices || [];
+  customerTypes = cfg.customerTypes || customerTypes;
+  renderPracticeConfig();
+}
 
 function renderPracticeConfig() {
   const cSel = $('#practice-criteria');
@@ -511,12 +515,10 @@ function renderPracticeConfig() {
   if (keep) tSel.value = keep;
 
   const vSel = $('#voice-actor');
-  const keepVoice = store.state.settings.voiceActorId;
+  const keepVoice = store.state.settings.voice;
   vSel.innerHTML = [
     '<option value="">Worker既定の声</option>',
-    ...voiceActors.map(
-      (v) => `<option value="${v.id}" ${v.id === keepVoice ? 'selected' : ''}>${esc(v.name)}${v.age ? `（${esc(v.age)}）` : ''}</option>`,
-    ),
+    ...voices.map((v) => `<option value="${v.id}" ${v.id === keepVoice ? 'selected' : ''}>${esc(v.name)}</option>`),
   ].join('');
 
   $('#practice-hint').textContent = store.state.criteria.length
@@ -525,7 +527,7 @@ function renderPracticeConfig() {
 }
 
 $('#voice-actor').addEventListener('change', (e) => {
-  store.state.settings.voiceActorId = e.target.value;
+  store.state.settings.voice = e.target.value;
   store.save();
 });
 
@@ -572,7 +574,7 @@ $('#start-run').addEventListener('click', async (e) => {
       criteria: criteriaText(),
       customerType: run.customerType,
       scenario: run.scenario,
-      voiceActorId: store.state.settings.voiceActorId || undefined,
+      voice: store.state.settings.voice || undefined,
     });
     pushCustomer(out);
   }).catch(() => {});
@@ -602,7 +604,7 @@ async function sendTurn({ audio, filename, text }) {
       customerType: run.customerType,
       scenario: run.scenario,
       vocabulary: store.state.settings.vocabulary,
-      voiceActorId: store.state.settings.voiceActorId || undefined,
+      voice: store.state.settings.voice || undefined,
     };
     const out = await api.turn(payload, audio, filename);
     if (!text && out.transcript) {
@@ -683,16 +685,34 @@ function unlockAudio() {
   );
 }
 
+let lastObjectUrl = null;
+
 function play(text, audioUrl) {
-  if (audioUrl) {
-    player.src = audioUrl;
-    player.play().catch(() => speak(text));
+  if (!audioUrl) {
+    speak(text);
     return;
   }
-  speak(text);
+  if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl);
+  lastObjectUrl = audioUrl.startsWith('data:') ? dataUriToObjectUrl(audioUrl) : null;
+  player.src = lastObjectUrl || audioUrl;
+  player.play().catch(() => speak(text));
 }
 
-// にじボイス未設定・失敗時のフォールバック
+// data URIのままだとiOS Safariで再生できないことがあるのでBlobに戻す
+function dataUriToObjectUrl(uri) {
+  try {
+    const [head, b64] = uri.split(',');
+    const mime = head.slice(5).replace(';base64', '');
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  } catch {
+    return null;
+  }
+}
+
+// TTS未設定・失敗時のフォールバック
 function speak(text) {
   if (!window.speechSynthesis) return;
   const u = new SpeechSynthesisUtterance(text);
@@ -751,12 +771,5 @@ renderQAList();
 setPracticeEnabled(false);
 
 if (store.state.settings.workerUrl) {
-  api
-    .config()
-    .then((cfg) => {
-      voiceActors = cfg.voiceActors || [];
-      customerTypes = cfg.customerTypes || customerTypes;
-      renderPracticeConfig();
-    })
-    .catch(() => {});
+  api.config().then(applyConfig).catch(() => {});
 }

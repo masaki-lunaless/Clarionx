@@ -1,9 +1,9 @@
 // Clarion backend — Cloudflare Worker
-// フロント（GitHub Pages）からのリクエストを受け、Claude / Whisper / にじボイス を叩く。
+// フロント（GitHub Pages）からのリクエストを受け、Claude / Whisper / TTS を叩く。
 // 目的：APIキーの隠蔽と、STT→LLM→TTSの直列処理を1リクエストに集約すること。
 
 import { ApiError, MODELS, generateStructured, generateText } from './llm.js';
-import { listVoiceActors, synthesize, transcribe } from './audio.js';
+import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
 import {
   CUSTOMER_TYPES,
   criteriaRequest,
@@ -11,6 +11,7 @@ import {
   roleplaySystemPrompt,
   scoringRequest,
   turningPointsRequest,
+  voiceDirection,
 } from './prompts.js';
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // Whisper APIの上限
@@ -105,10 +106,10 @@ const routes = {
   'GET /api/config': async (_body, request, env) =>
     json(
       {
-        customerTypes: CUSTOMER_TYPES,
-        voiceActors: await listVoiceActors(env),
+        customerTypes: CUSTOMER_TYPES.map(({ id, label, hint }) => ({ id, label, hint })),
+        voices: listVoices(env),
         stt: Boolean(env.OPENAI_API_KEY),
-        tts: Boolean(env.NIJIVOICE_API_KEY),
+        tts: activeProvider(env),
         models: MODELS,
       },
       request,
@@ -151,7 +152,7 @@ const routes = {
     return json({ document: doc, markdown: criteriaToMarkdown(doc) }, request, env);
   },
 
-  // ④ ロープレ1ターン：音声 → Whisper → Claude → にじボイス を直列で処理
+  // ④ ロープレ1ターン：音声 → Whisper → Claude → TTS を直列で処理
   'POST /api/roleplay/turn': async (body, request, env) => {
     let transcript = typeof body.text === 'string' ? body.text.trim() : '';
     if (!transcript && body.__audio) {
@@ -188,8 +189,9 @@ const routes = {
     });
 
     const audioUrl = await synthesize(env, replyText, {
-      voiceActorId: body.voiceActorId,
+      voice: body.voice,
       speed: body.speed,
+      ...voiceDirection(body.customerType),
     });
 
     return json({ transcript, replyText, audioUrl }, request, env);
@@ -208,7 +210,11 @@ const routes = {
   // 単体TTS（読み上げのやり直し用）
   'POST /api/tts': async (body, request, env) => {
     const text = requireString(body.text, 'text', 3000);
-    const audioUrl = await synthesize(env, text, { voiceActorId: body.voiceActorId, speed: body.speed });
+    const audioUrl = await synthesize(env, text, {
+      voice: body.voice,
+      speed: body.speed,
+      ...voiceDirection(body.customerType),
+    });
     return json({ audioUrl }, request, env);
   },
 };
