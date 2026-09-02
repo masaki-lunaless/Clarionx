@@ -1,5 +1,6 @@
 import { api, ClarionError } from './api.js';
 import { settings } from './store.js';
+import { canExtract, extractChunks, fmtDuration } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -187,12 +188,41 @@ $('#audio-file').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file || !current.caseId) return;
-  const data = await run(null, $('#capture-status'), `${file.name} を書き起こし中…（長い音声は数分かかります）`, () =>
-    api.transcribe(current.caseId, file, { vocabulary: settings.get('vocabulary') }, file.name),
-  );
-  if (!data) return;
-  current.case = data.case;
-  $('#case-transcript').value = data.case.transcript;
+  const el = $('#capture-status');
+
+  // 映像込みのMP4をそのまま送ると上限に当たるので、ブラウザ内で音声だけ抜いて分割する
+  if (!canExtract()) {
+    status(el, 'このブラウザでは動画から音声を取り出せません。tools/extract-audio.sh で変換してから読み込んでください', 'error');
+    return;
+  }
+
+  let extracted;
+  try {
+    extracted = await extractChunks(file, { onProgress: (msg) => status(el, `${file.name}：${msg}`) });
+  } catch (err) {
+    status(el, err.message, 'error');
+    return;
+  }
+
+  const { chunks, seconds, originalSeconds } = extracted;
+  const trimmed = originalSeconds - seconds;
+  const note = trimmed > 30 ? `（無音 ${fmtDuration(trimmed)} を除去）` : '';
+
+  const texts = [];
+  for (const [i, chunk] of chunks.entries()) {
+    status(el, `書き起こし中… ${i + 1}/${chunks.length} 個目 ${note}`);
+    try {
+      const data = await api.transcribe(current.caseId, chunk, { vocabulary: settings.get('vocabulary') }, `part${i + 1}.wav`);
+      current.case = data.case;
+      texts.push(data.added);
+      $('#case-transcript').value = data.case.transcript;
+    } catch (err) {
+      // 途中で失敗しても、そこまでの書き起こしは案件に残っている
+      status(el, `${i + 1}個目で失敗：${err.message}（${i}個目までは保存済み）`, 'error');
+      return;
+    }
+  }
+  status(el, `完了：${fmtDuration(seconds)} 分を ${chunks.length} 回に分けて書き起こしました ${note}`, 'ok');
 });
 
 $('#detect-btn').addEventListener('click', async (e) => {

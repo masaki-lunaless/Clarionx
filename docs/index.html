@@ -56,10 +56,10 @@
             <textarea class="input textarea-lg" id="case-transcript" placeholder="接客の書き起こしを貼り付け"></textarea>
             <div class="row">
               <label class="btn btn-ghost btn-sm file-btn">
-                音声ファイルを読み込む
-                <input type="file" id="audio-file" accept="audio/*,video/mp4" hidden>
+                動画・音声ファイルを読み込む
+                <input type="file" id="audio-file" accept="audio/*,video/*" hidden>
               </label>
-              <span class="hint">監視カメラ映像から <code>ffmpeg -i clip.mp4 -vn -acodec pcm_s16le -ar 16000 audio.wav</code> で抽出した音声を想定（25MBまで）。音声は書き起こし後に破棄され、保存されません。</span>
+              <span class="hint">MP4などの動画をそのまま読み込めます。ブラウザ内で音声だけを取り出し、無音を詰めて10分ずつに分けて書き起こします。<strong>音声は書き起こし後に破棄され、保存されません。</strong>数十時間をまとめて処理する場合は <code>tools/extract-audio.sh</code> を使ってください。</span>
             </div>
           </details>
 
