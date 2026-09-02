@@ -68,11 +68,16 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
  * これが無いと、未接続のまま操作して「何も起きない」状態になる。
  */
 function setConnected(ok, message) {
-  $('#connect-banner').hidden = ok;
-  if (!ok && message) $('#connect-message').textContent = message;
+  // 配信直後は古いHTMLと新しいJSが混ざることがある（GitHub Pagesのキャッシュは10分）。
+  // 要素が無い版のHTMLでも起動処理が止まらないよう、存在を確かめてから触る。
+  const banner = $('#connect-banner');
+  if (!banner) return;
+  banner.hidden = ok;
+  const msg = $('#connect-message');
+  if (!ok && message && msg) msg.textContent = message;
 }
 
-$('#go-settings').addEventListener('click', () => activateTab('settings'));
+$('#go-settings')?.addEventListener('click', () => activateTab('settings'));
 
 /* --------------------------------- 設定 ---------------------------------- */
 
@@ -166,7 +171,7 @@ async function createCase() {
 }
 
 $('#new-case').addEventListener('click', createCase);
-$('#new-case-empty').addEventListener('click', createCase);
+$('#new-case-empty')?.addEventListener('click', createCase);
 
 $('#delete-case').addEventListener('click', async () => {
   if (!confirm(`「${current.case.title}」を削除します。転換点と回答も消えます。よろしいですか？`)) return;
