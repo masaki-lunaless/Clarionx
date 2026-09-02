@@ -53,15 +53,26 @@ let current = { caseId: null, case: null, modeId: null, run: null, criteriaId: n
 
 /* ---------------------------------- タブ --------------------------------- */
 
-$$('.tab').forEach((tab) =>
-  tab.addEventListener('click', async () => {
-    $$('.tab').forEach((t) => t.classList.toggle('is-active', t === tab));
-    $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${tab.dataset.tab}`));
-    if (tab.dataset.tab === 'practice') await refreshModes();
-    if (tab.dataset.tab === 'merge') await refreshMerge();
-    if (tab.dataset.tab === 'records') await refreshRecords();
-  }),
-);
+async function activateTab(name) {
+  $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
+  $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${name}`));
+  if (name === 'practice') await refreshModes();
+  if (name === 'merge') await refreshMerge();
+  if (name === 'records') await refreshRecords();
+}
+
+$$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
+
+/**
+ * 接続していないことを常に画面に出す。
+ * これが無いと、未接続のまま操作して「何も起きない」状態になる。
+ */
+function setConnected(ok, message) {
+  $('#connect-banner').hidden = ok;
+  if (!ok && message) $('#connect-message').textContent = message;
+}
+
+$('#go-settings').addEventListener('click', () => activateTab('settings'));
 
 /* --------------------------------- 設定 ---------------------------------- */
 
@@ -76,8 +87,11 @@ $('#test-connection').addEventListener('click', async (e) => {
   const cfg = await run(e.target, el, '接続中…', () => api.config());
   if (!cfg) return;
   applyConfig(cfg);
+  setConnected(true);
   status(el, `接続OK — ${cfg.client} / 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${cfg.admin ? ' / 管理者' : ''}`, 'ok');
   await refreshAll();
+  // 初回は練習から触ってもらうのが分かりやすい
+  if (!cases.length && modes.length) await activateTab('practice');
 });
 
 function applyConfig(cfg) {
@@ -139,15 +153,20 @@ function renderCase() {
   renderTurningPoints();
 }
 
-$('#new-case').addEventListener('click', async () => {
-  const data = await run(null, $('#capture-status'), '作成中…', () =>
+async function createCase() {
+  // 案件が無いときは #capture-status が隠れているので、空画面側に出す
+  const statusEl = current.case ? $('#capture-status') : $('#capture-empty-status');
+  const data = await run(null, statusEl, '作成中…', () =>
     api.createCase({ title: `案件 ${cases.length + 1}`, transcript: '' }),
   );
   if (!data) return;
   await refreshCases();
   await openCase(data.case.id);
   $('#case-title').select();
-});
+}
+
+$('#new-case').addEventListener('click', createCase);
+$('#new-case-empty').addEventListener('click', createCase);
 
 $('#delete-case').addEventListener('click', async () => {
   if (!confirm(`「${current.case.title}」を削除します。転換点と回答も消えます。よろしいですか？`)) return;
@@ -812,12 +831,18 @@ async function refreshAll() {
   renderModeList();
 }
 
-if (settings.get('workerUrl')) {
-  api
-    .config()
-    .then(async (cfg) => {
-      applyConfig(cfg);
-      await refreshAll();
-    })
-    .catch(() => {});
-}
+(async function start() {
+  if (!settings.get('workerUrl') || !settings.get('token')) {
+    setConnected(false);
+    await activateTab('settings');
+    return;
+  }
+  try {
+    applyConfig(await api.config());
+    setConnected(true);
+    await refreshAll();
+  } catch (err) {
+    setConnected(false, `サーバーに接続できません：${err.message}`);
+    await activateTab('settings');
+  }
+})();

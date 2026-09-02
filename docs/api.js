@@ -24,18 +24,29 @@ async function handle(res) {
   return data;
 }
 
-const request = (method, path, body) =>
-  fetch(base() + path, {
-    method,
-    headers: headers(body ? { 'content-type': 'application/json' } : {}),
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  }).then(handle);
+/** 通信自体が失敗したときは、そのままでは "Failed to fetch" としか出ないので言い換える */
+async function send(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new ClarionError('サーバーに接続できません。Worker URLが正しいか、ネットワーク接続を確認してください');
+  }
+}
+
+const request = async (method, path, body) =>
+  handle(
+    await send(base() + path, {
+      method,
+      headers: headers(body ? { 'content-type': 'application/json' } : {}),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }),
+  );
 
 async function upload(path, { audio, payload, filename }) {
   const form = new FormData();
   if (audio) form.append('audio', audio, filename || 'audio.webm');
   form.append('payload', JSON.stringify(payload || {}));
-  return handle(await fetch(base() + path, { method: 'POST', headers: headers(), body: form }));
+  return handle(await send(base() + path, { method: 'POST', headers: headers(), body: form }));
 }
 
 export const api = {

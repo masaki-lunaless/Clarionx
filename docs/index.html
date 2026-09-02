@@ -14,13 +14,18 @@
     <span class="tagline">聞いて溜める・練習する・束ねる</span>
   </div>
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-tab="capture" role="tab">① 蓄積</button>
-    <button class="tab" data-tab="practice" role="tab">② ロープレ</button>
-    <button class="tab" data-tab="merge" role="tab">③ 統合</button>
+    <button class="tab is-active" data-tab="capture" role="tab">① 接客を集める</button>
+    <button class="tab" data-tab="practice" role="tab">② 練習する</button>
+    <button class="tab" data-tab="merge" role="tab">③ 基準をつくる</button>
     <button class="tab" data-tab="records" role="tab">記録</button>
     <button class="tab" data-tab="settings" role="tab">設定</button>
   </nav>
 </header>
+
+<div class="banner" id="connect-banner" hidden>
+  <span id="connect-message">まだサーバーに接続していません。設定を開いて、URLとアクセストークンを入れてください。</span>
+  <button class="btn btn-sm" id="go-settings">設定を開く</button>
+</div>
 
 <main>
   <!-- ① 蓄積 -->
@@ -36,8 +41,11 @@
 
       <div class="content">
         <div class="empty" id="case-empty">
-          <p>「＋ 新規」で案件を作り、接客の書き起こしを貼るか音声ファイルを読み込んでください。<br>
-             ここで溜めた回答が、③の統合で判断基準になります。</p>
+          <p><strong>実際にあった接客を1件ずつ登録する場所です。</strong></p>
+          <p>接客の書き起こしを貼るか、動画ファイルを読み込むと、AIが「なぜそう言ったのか」を聞く質問を作ります。<br>
+             その回答が、③でエースの判断基準になります。</p>
+          <button class="btn btn-primary" id="new-case-empty">＋ 最初の案件を作る</button>
+          <p class="status" id="capture-empty-status"></p>
         </div>
 
         <div id="case-body" hidden>
@@ -92,8 +100,9 @@
 
       <div class="content practice">
         <div class="empty" id="practice-empty">
-          <p>モードを選んで「開始」を押してください。<br>
-             モードは「③で束ねた判断基準 × 客タイプ × 場面」の組み合わせです。</p>
+          <p><strong>AIのお客様を相手に、接客を練習する場所です。</strong></p>
+          <p>左の一覧から練習したい設定を選んで「開始」を押してください。<br>
+             マイクで話しかけると、お客様が声で返します。終わったら採点されます。</p>
         </div>
 
         <div id="practice-body" hidden>
@@ -201,6 +210,8 @@
   <!-- 設定 -->
   <section class="panel" id="panel-settings">
     <div class="content narrow">
+      <h2>接続設定</h2>
+      <p class="hint">この2つを入れるまで、どの機能も動きません。値は管理者から受け取ってください。入力すると、この端末に記憶されます。</p>
       <label class="label">Worker URL
         <input class="input" id="worker-url" placeholder="https://clarion-proxy.xxxx.workers.dev">
       </label>
