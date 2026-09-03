@@ -262,9 +262,12 @@ $('#audio-file').addEventListener('change', async (e) => {
     return;
   }
 
-  const { chunks, seconds, originalSeconds } = extracted;
+  const { chunks, seconds, originalSeconds, gain } = extracted;
   const trimmed = originalSeconds - seconds;
-  const note = trimmed > 30 ? `（無音 ${fmtDuration(trimmed)} を除去）` : '';
+  const note =
+    (trimmed > 30 ? `（無音 ${fmtDuration(trimmed)} を除去` : '（') +
+    (gain > 1.05 ? `${trimmed > 30 ? '／' : ''}音量を${gain.toFixed(1)}倍に調整` : '') +
+    '）';
 
   const texts = [];
   for (const [i, chunk] of chunks.entries()) {

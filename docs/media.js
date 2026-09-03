@@ -35,6 +35,51 @@ function toMono16k(audioBuffer) {
 }
 
 /**
+ * 低い周波数のうなりを落とす（一次IIRハイパス）。
+ * 監視カメラや店内の録音には空調・冷蔵ケース・振動の音が常に乗っており、
+ * これが無音判定の基準を押し上げて、話し声との差を潰してしまう。
+ * 話し声はおおむね100Hz以上なので、そこから下を削る。
+ */
+function highPass(samples, cutoff = 100) {
+  const rc = 1 / (2 * Math.PI * cutoff);
+  const dt = 1 / SAMPLE_RATE;
+  const a = rc / (rc + dt);
+  const out = new Float32Array(samples.length);
+  let prevIn = 0;
+  let prevOut = 0;
+  for (let i = 0; i < samples.length; i++) {
+    prevOut = a * (prevOut + samples[i] - prevIn);
+    prevIn = samples[i];
+    out[i] = prevOut;
+  }
+  return out;
+}
+
+/**
+ * 音量を持ち上げる。マイクが遠い録音はそのままだとWhisperが話し声を拾えない。
+ * 単発のノイズに引っ張られないよう、上位1%の大きさを基準にする。
+ * 無音を増幅して雑音だけにしないよう、持ち上げ幅に上限を設ける。
+ */
+function normalize(samples, { target = 0.7, maxGain = 20 } = {}) {
+  const step = Math.max(1, Math.floor(samples.length / 200000));
+  const mags = [];
+  for (let i = 0; i < samples.length; i += step) mags.push(Math.abs(samples[i]));
+  mags.sort((a, b) => a - b);
+  const loud = mags[Math.floor(mags.length * 0.99)] || 0;
+  if (!loud) return { samples, gain: 1 };
+
+  const gain = Math.min(target / loud, maxGain);
+  if (gain <= 1.05) return { samples, gain: 1 };
+
+  const out = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i] * gain;
+    out[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+  }
+  return { samples: out, gain };
+}
+
+/**
  * 長い無音を詰める。監視カメラの通し録画は大半が無音のため、
  * ここで落とすと書き起こしの時間も費用も大きく減る。
  *
@@ -143,6 +188,11 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   let samples = toMono16k(decoded);
   const originalSeconds = samples.length / SAMPLE_RATE;
 
+  onProgress('音量を整えています…');
+  samples = highPass(samples);
+  const norm = normalize(samples);
+  samples = norm.samples;
+
   let level = null;
   if (trim) {
     onProgress('無音を詰めています…');
@@ -166,7 +216,7 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   for (let i = 0; i < samples.length; i += per) {
     chunks.push(toWav(samples.subarray(i, Math.min(i + per, samples.length))));
   }
-  return { chunks, seconds, originalSeconds, level };
+  return { chunks, seconds, originalSeconds, level, gain: norm.gain };
 }
 
 export const fmtDuration = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
