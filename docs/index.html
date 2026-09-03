@@ -226,6 +226,25 @@
       <label class="label">固有名詞ヒント（書き起こし精度の向上・任意）
         <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
       </label>
+      <hr>
+      <h2>取り込みの調整</h2>
+      <p class="hint">音声ファイルを読み込むときの処理です。既定のままで大半は動きます。素材に合わない場合だけ触ってください。</p>
+      <div class="fb-grid">
+        <label class="label">ハイパス カットオフ（Hz）
+          <input class="input" id="hp-cutoff" type="number" min="0" max="1000" step="10">
+        </label>
+        <label class="label">増幅の上限（倍）
+          <input class="input" id="max-gain" type="number" min="1" max="200" step="1">
+        </label>
+        <label class="label">無音判定の強さ（暗騒音の何倍を声とみなすか）
+          <input class="input" id="silence-factor" type="number" min="1" max="20" step="0.5">
+        </label>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="trim-enabled" checked>
+        <span>無音を詰める（切ると、元の長さのまま送ります）</span>
+      </label>
+
       <div class="row row-actions">
         <button class="btn btn-primary" id="test-connection">接続テスト</button>
         <span class="status" id="settings-status"></span>

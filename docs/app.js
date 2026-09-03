@@ -1,6 +1,6 @@
 import { api, ClarionError } from './api.js';
 import { settings } from './store.js';
-import { canExtract, extractChunks, fmtDuration } from './media.js';
+import { DEFAULTS, canExtract, extractChunks, fmtDuration } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -86,6 +86,26 @@ for (const [key, sel] of Object.entries({ workerUrl: '#worker-url', token: '#acc
   input.value = settings.get(key) || '';
   input.addEventListener('input', () => settings.set(key, input.value));
 }
+
+// 取り込みの調整値
+for (const [key, sel] of Object.entries({ hpCutoff: '#hp-cutoff', maxGain: '#max-gain', silenceFactor: '#silence-factor' })) {
+  const input = $(sel);
+  if (!input) continue;
+  input.value = settings.get(key) ?? DEFAULTS[key];
+  input.addEventListener('input', () => settings.set(key, Number(input.value) || DEFAULTS[key]));
+}
+const trimBox = $('#trim-enabled');
+if (trimBox) {
+  trimBox.checked = settings.get('trim') !== false;
+  trimBox.addEventListener('change', () => settings.set('trim', trimBox.checked));
+}
+
+const extractOptions = () => ({
+  hpCutoff: Number(settings.get('hpCutoff')) || DEFAULTS.hpCutoff,
+  maxGain: Number(settings.get('maxGain')) || DEFAULTS.maxGain,
+  silenceFactor: Number(settings.get('silenceFactor')) || DEFAULTS.silenceFactor,
+  trim: settings.get('trim') !== false,
+});
 
 $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
@@ -291,7 +311,10 @@ $('#audio-file').addEventListener('change', async (e) => {
 
   let extracted;
   try {
-    extracted = await extractChunks(file, { onProgress: (msg) => status(el, `${file.name}：${msg}`) });
+    extracted = await extractChunks(file, {
+      onProgress: (msg) => status(el, `${file.name}：${msg}`),
+      ...extractOptions(),
+    });
   } catch (err) {
     status(el, err.message, 'error');
     return;

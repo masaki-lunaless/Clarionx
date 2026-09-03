@@ -62,7 +62,7 @@ function toMono16k(audioBuffer) {
  * これが無音判定の基準を押し上げて、話し声との差を潰してしまう。
  * 話し声はおおむね100Hz以上なので、そこから下を削る。
  */
-function highPass(samples, cutoff = 100) {
+function highPass(samples, cutoff) {
   const rc = 1 / (2 * Math.PI * cutoff);
   const dt = 1 / SAMPLE_RATE;
   const a = rc / (rc + dt);
@@ -82,7 +82,7 @@ function highPass(samples, cutoff = 100) {
  * 単発のノイズに引っ張られないよう、上位1%の大きさを基準にする。
  * 無音を増幅して雑音だけにしないよう、持ち上げ幅に上限を設ける。
  */
-function normalize(samples, { target = 0.7, maxGain = 20 } = {}) {
+function normalize(samples, { target = 0.7, maxGain } = {}) {
   const step = Math.max(1, Math.floor(samples.length / 200000));
   const mags = [];
   for (let i = 0; i < samples.length; i += step) mags.push(Math.abs(samples[i]));
@@ -110,7 +110,7 @@ function normalize(samples, { target = 0.7, maxGain = 20 } = {}) {
  * Whisperは音声のない音を渡されると「ご視聴ありがとうございました」のような
  * 学習データの断片を延々と出力するため、それが混入してしまう。
  */
-function trimSilence(samples, { keepMs = 400 } = {}) {
+function trimSilence(samples, { keepMs = 400, factor = 4 } = {}) {
   const win = Math.floor(SAMPLE_RATE * 0.05); // 50msごとに判定
   const keep = Math.floor((SAMPLE_RATE * keepMs) / 1000);
 
@@ -128,7 +128,7 @@ function trimSilence(samples, { keepMs = 400 } = {}) {
   const sorted = [...peaks].sort((a, b) => a - b);
   const floor = sorted[Math.floor(sorted.length * 0.2)] || 0;
   const loudest = sorted[sorted.length - 1] || 0;
-  const threshold = Math.min(Math.max(floor * 4, 0.004), loudest * 0.5);
+  const threshold = Math.min(Math.max(floor * factor, 0.004), loudest * 0.5);
 
   const keepWindows = Math.ceil(keep / win);
   const mark = new Array(peaks.length).fill(false);
@@ -188,7 +188,11 @@ export const canExtract = () => Boolean(window.AudioContext || window.webkitAudi
  * 動画・音声ファイル → 送信できる大きさのWAVチャンクに分割する。
  * onProgress(段階の説明) で進捗を返す。
  */
-export async function extractChunks(file, { onProgress = () => {}, trim = true } = {}) {
+// 取り込みの調整値。素材によって最適が変わるので、設定から上書きできる。
+export const DEFAULTS = { hpCutoff: 100, maxGain: 20, silenceFactor: 4, trim: true };
+
+export async function extractChunks(file, { onProgress = () => {}, ...opts } = {}) {
+  const { hpCutoff, maxGain, silenceFactor, trim } = { ...DEFAULTS, ...opts };
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) throw new Error('このブラウザは音声の取り出しに対応していません');
 
@@ -212,8 +216,8 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   const originalSeconds = samples.length / SAMPLE_RATE;
 
   onProgress('音量を整えています…');
-  samples = highPass(samples);
-  const norm = normalize(samples);
+  samples = highPass(samples, hpCutoff);
+  const norm = normalize(samples, { maxGain });
   samples = norm.samples;
 
   let level = null;
