@@ -12,6 +12,7 @@ import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
 import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
+  assessTranscriptRequest,
   criteriaRequest,
   fillQuestionsRequest,
   formatTranscriptRequest,
@@ -256,6 +257,25 @@ const routes = [
       const current = await db.getCase(env, auth.client, params.id);
       const transcript = [current.transcript, text].filter(Boolean).join('\n');
       return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };
+    },
+  ],
+
+  // 素材として使えるかを見立てる（50時間の録画から使える区間を選ぶため）
+  [
+    'POST',
+    '/api/cases/:id/assess',
+    async ({ env, auth, params }) => {
+      const target = await db.getCase(env, auth.client, params.id);
+      const transcript = requireString(target.transcript, '書き起こし');
+      const out = await generateStructured(env, {
+        ...assessTranscriptRequest({ transcript }),
+        model: MODELS.chat,
+        maxTokens: 1500,
+        effort: EFFORT.scoring,
+        label: 'assess',
+      });
+      await db.updateCase(env, auth.client, params.id, { assessment: JSON.stringify(out) });
+      return { assessment: out };
     },
   ],
 

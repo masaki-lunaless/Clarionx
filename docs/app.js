@@ -120,12 +120,25 @@ async function refreshCases() {
   renderMergeCaseList();
 }
 
+const DENSITY = { high: '濃い', medium: 'ふつう', low: '薄い' };
+
+/** 素材の濃さ。50時間の録画から、聞く価値のある回を選ぶための目印 */
+function densityBadge(raw) {
+  try {
+    const a = JSON.parse(raw || 'null');
+    if (!a?.density) return '';
+    return `<span class="density ${a.density}">${DENSITY[a.density]}</span> `;
+  } catch {
+    return '';
+  }
+}
+
 function renderCaseList() {
   $('#case-list').innerHTML = cases
     .map(
       (c) => `<li><button class="item ${c.id === current.caseId ? 'is-active' : ''}" data-id="${c.id}">
         <span class="item-name">${esc(c.title)}</span>
-        <span class="item-meta">${esc(c.ace_name || '担当者未記入')}・${c.q_total ? `${c.q_answered}/${c.q_total} 回答` : '未検出'}</span>
+        <span class="item-meta">${densityBadge(c.assessment)}${esc(c.ace_name || '担当者未記入')}・${c.q_total ? `${c.q_answered}/${c.q_total} 回答` : '未検出'}</span>
       </button></li>`,
     )
     .join('');
@@ -145,6 +158,26 @@ async function openCase(id) {
   renderCase();
 }
 
+function renderAssessment(raw) {
+  const box = $('#assessment');
+  if (!box) return;
+  let a = null;
+  try { a = JSON.parse(raw || 'null'); } catch { a = null; }
+  if (!a?.density) {
+    box.innerHTML = '';
+    return;
+  }
+  const list = (items) => (items || []).map((x) => `<li>${esc(x)}</li>`).join('') || '<li>—</li>';
+  box.innerHTML = `<div class="card">
+    <div class="card-head"><span class="density ${a.density}">素材の濃さ：${DENSITY[a.density]}</span></div>
+    <p class="why">${esc(a.reason)}</p>
+    <div class="assess-cols">
+      <div><h4>含まれている場面</h4><ul>${list(a.covered)}</ul></div>
+      <div><h4>欠けている場面</h4><ul>${list(a.missing)}</ul></div>
+    </div>
+  </div>`;
+}
+
 function renderCase() {
   const c = current.case;
   $('#case-empty').hidden = Boolean(c);
@@ -155,6 +188,7 @@ function renderCase() {
   $('#case-date').value = c.occurred_on || '';
   $('#case-context').value = c.context || '';
   $('#case-transcript').value = c.transcript || '';
+  renderAssessment(c.assessment);
   renderTurningPoints();
 }
 
@@ -261,6 +295,23 @@ $('#format-btn').addEventListener('click', async (e) => {
   current.case = data.case;
   $('#case-transcript').value = data.case.transcript;
   status(el, '整えました。内容を確認してから転換点を検出してください', 'ok');
+});
+
+$('#assess-btn')?.addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
+    return;
+  }
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '素材として使えるか見ています…', () => api.assess(current.caseId));
+  if (!data) return;
+  current.case.assessment = JSON.stringify(data.assessment);
+  renderAssessment(current.case.assessment);
+  await refreshCases();
+  if (data.assessment.density === 'low') {
+    status(el, '判断の場面が薄い録音です。転換点を検出しても浅い結果になります', 'error');
+  }
 });
 
 $('#detect-btn').addEventListener('click', async (e) => {

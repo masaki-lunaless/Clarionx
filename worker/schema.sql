@@ -92,3 +92,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_client ON runs (client, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_criteria ON runs (criteria_id);
+
+-- 素材の濃さ（後から追加）。判断が起きている場面が含まれているかの見立て。
+-- 50時間の録画から、インタビューする価値のある区間を選ぶために使う。
+ALTER TABLE cases ADD COLUMN assessment TEXT;

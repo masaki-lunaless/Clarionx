@@ -77,6 +77,46 @@ const INTERVIEW_SYSTEM = `あなたは、接客のトップ人材が持つ暗黙
  * Whisperは話者を分けず句読点も付けないため、そのままでは
  * 「誰がいつ何を言ったか」を前提にした①の処理が働かない。
  */
+/**
+ * 素材の濃さを見立てる。
+ * 通し録画には、判断が起きていない区間（事務処理・会計・見送りだけ）が大量に含まれる。
+ * そこに転換点検出をかけても浅い結果しか出ないため、先に選り分ける。
+ */
+export function assessTranscriptRequest({ transcript }) {
+  return {
+    system: `あなたは、接客の録音が「エースの判断を引き出す材料」として使えるかを見立てる審査者です。
+
+【価値があるのは、判断が起きている場面】
+- 品物や要望を見て、何をどう見立てたかが表れている
+- 客の迷い・否定・沈黙に対して、店員が何かを選んでいる
+- 価格や提案を切り出すまでの持っていき方
+- 客の態度や温度が変わっている
+
+【価値が低いのは、決まったことを執行しているだけの場面】
+- 金額が決まった後の書類記入、本人確認、会計、現金の受け渡し
+- 挨拶と見送りだけ
+- 待ち時間の雑談だけ
+
+【判定】
+- high … 判断の場面が複数あり、インタビューの材料になる
+- medium … 判断の場面はあるが少ない。部分的に使える
+- low … 執行や事務が中心。インタビューしても浅い話にしかならない`,
+    messages: [{ role: 'user', content: `次の接客の書き起こしを見立ててください。\n\n${transcript}` }],
+    toolName: 'record_assessment',
+    toolDescription: '素材としての濃さを記録する',
+    schema: {
+      type: 'object',
+      properties: {
+        density: { type: 'string', enum: ['high', 'medium', 'low'], description: '材料としての濃さ' },
+        reason: { type: 'string', description: 'そう判断した理由。1〜2文で' },
+        covered: { type: 'array', items: { type: 'string' }, description: '含まれている場面' },
+        missing: { type: 'array', items: { type: 'string' }, description: '欠けていて、録れていれば価値が高かった場面' },
+      },
+      required: ['density', 'reason', 'covered', 'missing'],
+    },
+  };
+}
+
 export function formatTranscriptRequest({ transcript, context }) {
   return {
     system: `あなたは、接客の録音から起こした文字列を、読める形に整える校正者です。

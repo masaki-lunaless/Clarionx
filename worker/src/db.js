@@ -87,7 +87,7 @@ export async function createCase(env, client, data) {
 }
 
 export async function updateCase(env, client, id, data) {
-  const fields = { title: 'title', aceName: 'ace_name', context: 'context', transcript: 'transcript', occurredOn: 'occurred_on' };
+  const fields = { title: 'title', aceName: 'ace_name', context: 'context', transcript: 'transcript', occurredOn: 'occurred_on', assessment: 'assessment' };
   const sets = [];
   const values = [];
   for (const [key, column] of Object.entries(fields)) {

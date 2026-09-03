@@ -59,6 +59,7 @@ export const api = {
   updateCase: (id, data) => request('PATCH', `/api/cases/${id}`, data),
   deleteCase: (id) => request('DELETE', `/api/cases/${id}`),
   transcribe: (id, audio, payload, filename) => upload(`/api/cases/${id}/transcribe`, { audio, payload, filename }),
+  assess: (id) => request('POST', `/api/cases/${id}/assess`, {}),
   format: (id) => request('POST', `/api/cases/${id}/format`, {}),
   detect: (id) => request('POST', `/api/cases/${id}/detect`, {}),
   saveAnswer: (questionId, answer) => request('PATCH', `/api/questions/${questionId}`, { answer }),

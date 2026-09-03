@@ -328,3 +328,13 @@ table.records tr.detail-row > td { white-space: normal; background: var(--surfac
 .banner .btn { flex: none; }
 .empty .btn { margin-top: 12px; }
 .empty p { margin: 6px 0; }
+
+/* 素材の濃さ */
+.density { font-weight: 600; padding: 1px 8px; border-radius: 99px; font-size: .74rem; }
+.density.high { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.density.medium { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.density.low { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }
+.assess-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+@media (max-width: 620px) { .assess-cols { grid-template-columns: 1fr; } }
+.assess-cols ul { margin: 4px 0; padding-left: 1.2em; font-size: .84rem; }
+.assess-cols h4 { font-size: .8rem; color: var(--ink-2); }
