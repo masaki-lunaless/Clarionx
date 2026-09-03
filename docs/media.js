@@ -9,11 +9,33 @@ const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16bit モノラル
 // Whisperの上限は25MB。ヘッダと余裕を見て10分（約19MB）で切る。
 export const CHUNK_SECONDS = 600;
 
-/** 全チャンネルを平均して1本にし、16kHzへ線形補間で落とす */
+/**
+ * 全チャンネルを平均して1本にし、16kHzへ線形補間で落とす。
+ *
+ * ただし左右が逆相の素材は、平均を取ると声が打ち消し合って消える。
+ * 相関を見て、逆相なら平均せず片チャンネルだけを使う。
+ */
 function toMono16k(audioBuffer) {
   const { numberOfChannels, length, sampleRate } = audioBuffer;
-  const channels = [];
+  let channels = [];
   for (let c = 0; c < numberOfChannels; c++) channels.push(audioBuffer.getChannelData(c));
+
+  let correlation = null;
+  if (channels.length === 2) {
+    const step = Math.max(1, Math.floor(length / 100000));
+    let dot = 0;
+    let la = 0;
+    let lb = 0;
+    for (let i = 0; i < length; i += step) {
+      const a = channels[0][i];
+      const b = channels[1][i];
+      dot += a * b;
+      la += a * a;
+      lb += b * b;
+    }
+    correlation = la && lb ? dot / Math.sqrt(la * lb) : 0;
+    if (correlation < -0.3) channels = [channels[0]]; // 逆相：平均すると消えるので片側だけ使う
+  }
 
   const ratio = sampleRate / SAMPLE_RATE;
   const outLength = Math.floor(length / ratio);
@@ -31,7 +53,7 @@ function toMono16k(audioBuffer) {
     }
     out[i] = sum / numberOfChannels;
   }
-  return out;
+  return { samples: out, correlation, channels: numberOfChannels };
 }
 
 /**
@@ -185,7 +207,8 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   }
 
   onProgress('16kHzに変換中…');
-  let samples = toMono16k(decoded);
+  const mono = toMono16k(decoded);
+  let samples = mono.samples;
   const originalSeconds = samples.length / SAMPLE_RATE;
 
   onProgress('音量を整えています…');
@@ -216,7 +239,23 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   for (let i = 0; i < samples.length; i += per) {
     chunks.push(toWav(samples.subarray(i, Math.min(i + per, samples.length))));
   }
-  return { chunks, seconds, originalSeconds, level, gain: norm.gain };
+  return {
+    chunks,
+    seconds,
+    originalSeconds,
+    gain: norm.gain,
+    // 耳と数値で原因を判断できるようにする
+    diagnostics: {
+      チャンネル数: mono.channels,
+      左右の相関: mono.correlation === null ? '—' : mono.correlation.toFixed(2),
+      増幅率: `${norm.gain.toFixed(1)}倍`,
+      暗騒音: level ? level.floor.toFixed(4) : '—',
+      判定しきい値: level ? level.threshold.toFixed(4) : '—',
+      最大振幅: level ? level.loudest.toFixed(3) : '—',
+      元の長さ: fmtDuration(originalSeconds),
+      音声として残った長さ: fmtDuration(seconds),
+    },
+  };
 }
 
 export const fmtDuration = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;

@@ -242,6 +242,41 @@ bindCaseField('#case-date', 'occurredOn');
 bindCaseField('#case-context', 'context');
 bindCaseField('#case-transcript', 'transcript');
 
+let lastExtract = null;
+
+/** 取り込んだ音声の測定値と、処理後の音声そのものを出す。耳で原因を判断できるように */
+function renderExtractReport(file, extracted, note) {
+  const box = $('#extract-report');
+  if (!box) return;
+  const d = extracted.diagnostics || {};
+  box.innerHTML = `<div class="card">
+    <div class="card-head"><h3>取り込みの結果：${esc(file.name)}</h3></div>
+    ${note ? `<p class="why">${esc(note)}</p>` : ''}
+    <div class="diag">${Object.entries(d)
+      .map(([k, v]) => `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`)
+      .join('')}</div>
+    <p class="hint">下がWhisperに送っている音声そのものです。聞こえ方を確認してください。</p>
+    <div class="chunk-players" id="chunk-players"></div>
+    <div class="row row-end"><button class="btn btn-ghost btn-sm" id="dl-chunks">処理後の音声を保存</button></div>
+  </div>`;
+  const players = $('#chunk-players');
+  extracted.chunks.slice(0, 3).forEach((c, i) => {
+    const el = document.createElement('audio');
+    el.controls = true;
+    el.src = URL.createObjectURL(c);
+    el.title = `${i + 1}個目`;
+    players.append(el);
+  });
+  $('#dl-chunks').addEventListener('click', () => {
+    extracted.chunks.forEach((c, i) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(c);
+      a.download = `${file.name.replace(/\.[^.]+$/, '')}_part${i + 1}.wav`;
+      a.click();
+    });
+  });
+}
+
 $('#audio-file').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   e.target.value = '';
@@ -262,6 +297,8 @@ $('#audio-file').addEventListener('change', async (e) => {
     return;
   }
 
+  lastExtract = { file, extracted };
+  renderExtractReport(file, extracted);
   const { chunks, seconds, originalSeconds, gain } = extracted;
   const trimmed = originalSeconds - seconds;
   const note =
@@ -280,6 +317,7 @@ $('#audio-file').addEventListener('change', async (e) => {
     } catch (err) {
       // 途中で失敗しても、そこまでの書き起こしは案件に残っている
       status(el, `${i + 1}個目で失敗：${err.message}（${i}個目までは保存済み）`, 'error');
+      renderExtractReport(file, extracted, '送った音声は下で再生できます。話し声が聞き取れない場合は、録音そのものに声が入っていないか、音量が足りていません。');
       return;
     }
   }
