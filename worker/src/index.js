@@ -14,6 +14,7 @@ import {
   CUSTOMER_TYPES,
   criteriaRequest,
   fillQuestionsRequest,
+  formatTranscriptRequest,
   followUpRequest,
   roleplaySystemPrompt,
   scoringRequest,
@@ -255,6 +256,26 @@ const routes = [
       const current = await db.getCase(env, auth.client, params.id);
       const transcript = [current.transcript, text].filter(Boolean).join('\n');
       return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };
+    },
+  ],
+
+  // 書き起こしに話者と句読点を入れる
+  [
+    'POST',
+    '/api/cases/:id/format',
+    async ({ env, auth, params }) => {
+      const target = await db.getCase(env, auth.client, params.id);
+      const transcript = requireString(target.transcript, '書き起こし');
+      const formatted = await generateText(env, {
+        ...formatTranscriptRequest({ transcript, context: contextOf(target) }),
+        model: MODELS.chat,
+        maxTokens: 16000,
+        effort: EFFORT.analysis,
+        label: 'format',
+      });
+      const body = stripPreamble(formatted);
+      if (!body) throw new ApiError(502, '整形できませんでした');
+      return { case: await db.updateCase(env, auth.client, params.id, { transcript: body }) };
     },
   ],
 
@@ -568,6 +589,17 @@ const modeSummary = (m) => ({
  * 客のセリフに混じったト書きを落とす。
  * プロンプトで禁止しているが完全には守られず、残ると音声でそのまま読み上げられてしまう。
  */
+/**
+ * 整形結果の前置きを落とす。
+ * 「以下、整理しました」のような説明が付いてくることがあり、そのまま書き起こしに残ってしまう。
+ * 最初の話者ラベルより前を捨てる。
+ */
+export function stripPreamble(text) {
+  const lines = String(text || '').split('\n');
+  const start = lines.findIndex((l) => /^\s*(店員|客\d?|\?)\s*[：:]/.test(l));
+  return (start === -1 ? lines : lines.slice(start)).join('\n').trim();
+}
+
 export function stripStageDirections(text) {
   const cleaned = String(text || '')
     .replace(/\*[^*]*\*/g, '')   // *両手でカウンターに置きながら*

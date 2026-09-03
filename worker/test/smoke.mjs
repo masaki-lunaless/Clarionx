@@ -1,6 +1,6 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
-import worker, { SCORING, computeTotal, stripStageDirections } from '../src/index.js';
+import worker, { SCORING, computeTotal, stripPreamble, stripStageDirections } from '../src/index.js';
 import { cleanTranscript } from '../src/audio.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
@@ -253,6 +253,14 @@ check('採点: 範囲外の減点は丸める', computeTotal({ closed: true, per
 
 check('feedback: 保存できる', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'off', scoring: 'agree', note: '客が素直すぎる' }) })).status === 200);
 check('feedback: 不正な値は400', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'とても良い' }) })).status === 400);
+
+// --- 整形結果の前置き除去 ---
+check('前置き: 説明行を落とす',
+  stripPreamble('以下、整理しました。\n\n---\n\n店員：いらっしゃいませ\n客：どうも') === '店員：いらっしゃいませ\n客：どうも',
+  JSON.stringify(stripPreamble('以下、整理しました。\n\n---\n\n店員：いらっしゃいませ\n客：どうも')));
+check('前置き: 本文だけなら変えない', stripPreamble('店員：はい\n客：どうも') === '店員：はい\n客：どうも');
+check('前置き: ?ラベルでも先頭と認識する', stripPreamble('整えました\n?：あの\n店員：はい') === '?：あの\n店員：はい');
+check('前置き: ラベルが無ければそのまま返す', stripPreamble('ラベルなしの本文') === 'ラベルなしの本文');
 
 // --- Whisperの誤出力の除去 ---
 const 幻聴 = '本日はご覧いただきありがとうございます。 ご視聴ありがとうございました。 ご視聴ありがとうございました。 ご視聴ありがとうございました。';

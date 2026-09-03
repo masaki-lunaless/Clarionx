@@ -71,8 +71,9 @@ const HALLUCINATIONS = [
  * あわせて、同じ文の連続も1つにまとめる（雑音の多い音声で起きる）。
  */
 export function cleanTranscript(text) {
+  // Whisperは日本語で句読点を付けないことがあるため、空白区切りも文の切れ目として扱う
   const sentences = String(text)
-    .split(/(?<=[。！？])\s*|\n+/)
+    .split(/(?<=[。！？])\s*|\n+|\s{1,}/)
     .map((t) => t.trim())
     .filter(Boolean);
 

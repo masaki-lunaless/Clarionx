@@ -249,6 +249,20 @@ $('#audio-file').addEventListener('change', async (e) => {
   status(el, `完了：${fmtDuration(seconds)} 分を ${chunks.length} 回に分けて書き起こしました ${note}`, 'ok');
 });
 
+$('#format-btn').addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
+    return;
+  }
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '話者を判定して整えています…（30秒ほどかかります）', () => api.format(current.caseId));
+  if (!data) return;
+  current.case = data.case;
+  $('#case-transcript').value = data.case.transcript;
+  status(el, '整えました。内容を確認してから転換点を検出してください', 'ok');
+});
+
 $('#detect-btn').addEventListener('click', async (e) => {
   const el = $('#capture-status');
   if (!$('#case-transcript').value.trim()) {
