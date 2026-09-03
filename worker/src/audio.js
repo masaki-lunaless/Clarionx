@@ -83,7 +83,25 @@ export function cleanTranscript(text) {
     if (kept.length && kept[kept.length - 1] === sentence) continue; // 直前と同じ文は落とす
     kept.push(sentence);
   }
-  return kept.join(' ').trim();
+  return collapseRepeats(kept).join(' ').trim();
+}
+
+/**
+ * 直後に繰り返される文の塊を1つにまとめる。
+ * 音量の小さい音声では、Whisperが1文ではなく数文まとめて繰り返すことがある
+ * （A B A B のような形）。1文ずつの比較では取り逃がすため、塊で見る。
+ */
+function collapseRepeats(sentences, maxBlock = 4) {
+  const out = [...sentences];
+  for (let size = maxBlock; size >= 2; size--) {
+    for (let i = 0; i + size * 2 <= out.length; ) {
+      const a = out.slice(i, i + size).join('\u0000');
+      const b = out.slice(i + size, i + size * 2).join('\u0000');
+      if (a === b) out.splice(i + size, size);
+      else i++;
+    }
+  }
+  return out;
 }
 
 /* ------------------------------ TTSプロバイダ ------------------------------ */
