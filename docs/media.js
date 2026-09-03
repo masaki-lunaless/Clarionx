@@ -215,6 +215,21 @@ export async function extractChunks(file, { onProgress = () => {}, ...opts } = {
   let samples = mono.samples;
   const originalSeconds = samples.length / SAMPLE_RATE;
 
+  // 完全な無音はここで止める。
+  // しきい値の計算が0になり「0 < 0 は偽」で全区間が音声扱いになるため、
+  // これを通すと無音をまるごとWhisperへ送ってしまう（費用も時間も無駄になる）。
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i] < 0 ? -samples[i] : samples[i];
+    if (v > peak) peak = v;
+  }
+  if (peak < 0.0005) {
+    throw new Error(
+      `このファイルには音声が入っていません（${fmtDuration(originalSeconds)}すべて無音）。` +
+        '録音機器のマイク入力か、書き出し時に音声トラックが含まれていたかを確認してください。',
+    );
+  }
+
   onProgress('音量を整えています…');
   samples = highPass(samples, hpCutoff);
   const norm = normalize(samples, { maxGain });
