@@ -246,8 +246,12 @@ const routes = [
     'POST',
     '/api/cases/:id/transcribe',
     async ({ env, auth, params, body }) => {
+      if (!body.__audio) throw new ApiError(400, '音声ファイルが必要です');
       const text = await transcribeIfAudio(env, body);
-      if (!text) throw new ApiError(400, '音声ファイルが必要です');
+      if (!text) {
+        // Whisperの誤出力を除いた結果、何も残らなかった＝話し声が入っていない
+        throw new ApiError(422, 'この音声からは話し声を検出できませんでした。録音の音量や内容を確認してください');
+      }
       const current = await db.getCase(env, auth.client, params.id);
       const transcript = [current.transcript, text].filter(Boolean).join('\n');
       return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };

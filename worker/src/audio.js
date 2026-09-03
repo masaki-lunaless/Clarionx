@@ -51,7 +51,38 @@ export async function transcribe(env, blob, { prompt, filename } = {}) {
     throw new ApiError(502, 'Whisper APIエラー', (await res.text()).slice(0, 800));
   }
   const data = await res.json();
-  return (data.text || '').trim();
+  return cleanTranscript(data.text || '');
+}
+
+// Whisperが音声のない音を渡されたときに出す定型文。学習データの動画由来で、接客には現れない。
+// 「ありがとうございました」のような接客で実際に使う言い回しは対象にしない。
+const HALLUCINATIONS = [
+  /ご(視|清)聴(いただき)?(まことに|誠に)?ありがとうございま(した|す)/,
+  /本日はご覧いただきありがとうございま(した|す)/,
+  /最後まで(ご視聴|ご覧)いただきありがとうございま(した|す)/,
+  /チャンネル登録(と高評価)?(を)?(よろしく|お願い)/,
+  /この動画/,
+  /次回(の動画)?も(お楽しみに|よろしく)/,
+];
+
+/**
+ * 書き起こしからWhisperの誤出力を取り除く。
+ * 無音や環境音だけの区間に対して、同じ定型文を何十回も返してくることがある。
+ * あわせて、同じ文の連続も1つにまとめる（雑音の多い音声で起きる）。
+ */
+export function cleanTranscript(text) {
+  const sentences = String(text)
+    .split(/(?<=[。！？])\s*|\n+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const kept = [];
+  for (const sentence of sentences) {
+    if (HALLUCINATIONS.some((re) => re.test(sentence))) continue;
+    if (kept.length && kept[kept.length - 1] === sentence) continue; // 直前と同じ文は落とす
+    kept.push(sentence);
+  }
+  return kept.join(' ').trim();
 }
 
 /* ------------------------------ TTSプロバイダ ------------------------------ */

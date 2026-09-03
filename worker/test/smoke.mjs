@@ -1,6 +1,7 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
 import worker, { SCORING, computeTotal, stripStageDirections } from '../src/index.js';
+import { cleanTranscript } from '../src/audio.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -252,6 +253,18 @@ check('採点: 範囲外の減点は丸める', computeTotal({ closed: true, per
 
 check('feedback: 保存できる', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'off', scoring: 'agree', note: '客が素直すぎる' }) })).status === 200);
 check('feedback: 不正な値は400', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'とても良い' }) })).status === 400);
+
+// --- Whisperの誤出力の除去 ---
+const 幻聴 = '本日はご覧いただきありがとうございます。 ご視聴ありがとうございました。 ご視聴ありがとうございました。 ご視聴ありがとうございました。';
+check('幻聴: 定型文をすべて落とす', cleanTranscript(幻聴) === '', JSON.stringify(cleanTranscript(幻聴)));
+check('幻聴: 接客の「ありがとうございました」は残す',
+  cleanTranscript('本日はありがとうございました。またお越しください。') === '本日はありがとうございました。 またお越しください。',
+  cleanTranscript('本日はありがとうございました。またお越しください。'));
+check('幻聴: 連続する同一文は1つにまとめる',
+  cleanTranscript('はい。はい。はい。いらっしゃいませ。') === 'はい。 いらっしゃいませ。',
+  cleanTranscript('はい。はい。はい。いらっしゃいませ。'));
+check('幻聴: 通常の会話は変えない',
+  cleanTranscript('いらっしゃいませ。買取のご相談でしょうか。') === 'いらっしゃいませ。 買取のご相談でしょうか。');
 
 // --- ト書き除去（音声で読み上げられてしまうため） ---
 check('ト書き: アスタリスクを落とす', stripStageDirections('*時計を置きながら*\n\nこれ、どう思います？') === 'これ、どう思います？', stripStageDirections('*時計を置きながら*\n\nこれ、どう思います？'));

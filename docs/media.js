@@ -37,28 +37,37 @@ function toMono16k(audioBuffer) {
 /**
  * 長い無音を詰める。監視カメラの通し録画は大半が無音のため、
  * ここで落とすと書き起こしの時間も費用も大きく減る。
- * 発話を切らないよう、無音の前後は少し残す。
+ *
+ * しきい値は録音ごとに変える。固定値だと、マイクが遠く全体が小さい録音では
+ * 全区間が無音と判定され、結果として無音のままWhisperへ送ることになる。
+ * Whisperは音声のない音を渡されると「ご視聴ありがとうございました」のような
+ * 学習データの断片を延々と出力するため、それが混入してしまう。
  */
-function trimSilence(samples, { threshold = 0.012, keepMs = 400 } = {}) {
+function trimSilence(samples, { keepMs = 400 } = {}) {
   const win = Math.floor(SAMPLE_RATE * 0.05); // 50msごとに判定
   const keep = Math.floor((SAMPLE_RATE * keepMs) / 1000);
-  const loud = [];
 
+  const peaks = [];
   for (let i = 0; i < samples.length; i += win) {
     let peak = 0;
     for (let j = i; j < Math.min(i + win, samples.length); j++) {
       const v = Math.abs(samples[j]);
       if (v > peak) peak = v;
     }
-    loud.push(peak >= threshold);
+    peaks.push(peak);
   }
 
-  // 音のある区間の前後を keep 分だけ残す
+  // 下位20%を「その録音の暗騒音」とみなし、その数倍を超えたところを音声とする
+  const sorted = [...peaks].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.2)] || 0;
+  const loudest = sorted[sorted.length - 1] || 0;
+  const threshold = Math.min(Math.max(floor * 4, 0.004), loudest * 0.5);
+
   const keepWindows = Math.ceil(keep / win);
-  const mark = new Array(loud.length).fill(false);
-  for (let i = 0; i < loud.length; i++) {
-    if (!loud[i]) continue;
-    for (let j = Math.max(0, i - keepWindows); j <= Math.min(loud.length - 1, i + keepWindows); j++) mark[j] = true;
+  const mark = new Array(peaks.length).fill(false);
+  for (let i = 0; i < peaks.length; i++) {
+    if (peaks[i] < threshold) continue;
+    for (let j = Math.max(0, i - keepWindows); j <= Math.min(peaks.length - 1, i + keepWindows); j++) mark[j] = true;
   }
 
   const parts = [];
@@ -70,7 +79,6 @@ function trimSilence(samples, { threshold = 0.012, keepMs = 400 } = {}) {
     parts.push(samples.subarray(start, end));
     total += end - start;
   }
-  if (!parts.length) return samples; // 全部無音と判定されたら元に戻す
 
   const out = new Float32Array(total);
   let offset = 0;
@@ -78,7 +86,7 @@ function trimSilence(samples, { threshold = 0.012, keepMs = 400 } = {}) {
     out.set(p, offset);
     offset += p.length;
   }
-  return out;
+  return { samples: out, threshold, floor, loudest };
 }
 
 /** Float32のPCMを16bitのWAVにする */
@@ -135,18 +143,30 @@ export async function extractChunks(file, { onProgress = () => {}, trim = true }
   let samples = toMono16k(decoded);
   const originalSeconds = samples.length / SAMPLE_RATE;
 
+  let level = null;
   if (trim) {
     onProgress('無音を詰めています…');
-    samples = trimSilence(samples);
+    const res = trimSilence(samples);
+    samples = res.samples;
+    level = res;
   }
   const seconds = samples.length / SAMPLE_RATE;
+
+  // 音声がほとんど無いまま送ると、Whisperが無関係な定型文を延々と返してくる。
+  // 送る前にここで止めて、利用者に理由を伝える。
+  if (seconds < 1) {
+    throw new Error(
+      `このファイルからは音声が検出できませんでした（${fmtDuration(originalSeconds)}中0秒）。` +
+        '録音の音量が小さすぎるか、話し声が入っていない可能性があります。',
+    );
+  }
 
   const chunks = [];
   const per = CHUNK_SECONDS * SAMPLE_RATE;
   for (let i = 0; i < samples.length; i += per) {
     chunks.push(toWav(samples.subarray(i, Math.min(i + per, samples.length))));
   }
-  return { chunks, seconds, originalSeconds };
+  return { chunks, seconds, originalSeconds, level };
 }
 
 export const fmtDuration = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
