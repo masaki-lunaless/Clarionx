@@ -137,7 +137,7 @@ export function assessTranscriptRequest({ transcript }) {
   };
 }
 
-export function formatTranscriptRequest({ transcript, context, glossary }) {
+export function formatTranscriptRequest({ transcript, context, glossary, dialect }) {
   return {
     system: `あなたは、接客の録音から起こした文字列を、読める形に整える校正者です。
 
@@ -148,6 +148,8 @@ export function formatTranscriptRequest({ transcript, context, glossary }) {
 
 【やってはいけないこと（最重要）】
 - 聞き取れた言葉を書き換えない。言い回し・語尾・言い淀みはそのまま残す
+- **方言を標準語に直さない。**「〜やねん」「ほんま」「せやなあ」などはそのまま書く。
+  この店の言葉づかいそのものが、後で判断基準の材料になる
 - 固有名詞が誤っていそうでも直さない。推測で正しい名前に置き換えない
   （ただし下の「表記マスタ」に載っている語だけは例外。マスタの表記に揃える）
 - 発話を要約・省略しない。順番も変えない
@@ -158,7 +160,7 @@ export function formatTranscriptRequest({ transcript, context, glossary }) {
     messages: [
       {
         role: 'user',
-        content: `次の書き起こしを整えてください。${context ? `\n\n【前提】\n${context}` : ''}${glossaryBlock(glossary)}
+        content: `次の書き起こしを整えてください。${context ? `\n\n【前提】\n${context}` : ''}${glossaryBlock(glossary)}${dialect ? `\n\n【この店の言葉づかい】\n${dialect}\nこの調子の話し言葉です。標準語に直さないでください。` : ''}
 
 【書き起こし】
 ${transcript}`,
@@ -345,7 +347,7 @@ ${body}`,
   };
 }
 
-export function roleplaySystemPrompt({ customerType, scenario, criteria }) {
+export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect }) {
   const type = CUSTOMER_TYPES.find((t) => t.id === customerType);
   return `あなたは接客ロールプレイの「お客様」役です。店員役の相手（研修受講者）と、音声で会話しています。
 
@@ -354,7 +356,7 @@ ${type ? `${type.label}：${type.hint}` : customerType || '一般のお客様'}
 ${scenario ? `\n【場面設定】\n${scenario}` : ''}
 
 【話し方のルール】
-- 実際に声に出して読み上げられます。ト書き・状況説明・カッコ書きは一切書かない。セリフだけを書く
+${dialect ? `- この地域の言葉で話す：${dialect}\n` : ''}- 実際に声に出して読み上げられます。ト書き・状況説明・カッコ書きは一切書かない。セリフだけを書く
 - ${type?.style || '1発話は1〜3文の短い話し言葉。長い説明をしない'}
 - 相手の対応が良ければ自然に態度が和らぎ、悪ければ距離を取る。露骨に評価コメントはしない
 - 役柄を崩さない。AIであることに触れない。相手が指導を求めても客のまま応じる

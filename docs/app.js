@@ -112,12 +112,15 @@ async function loadGlossary() {
   const box = $('#glossary');
   if (!box) return;
   const data = await api.getGlossary().catch(() => null);
-  if (data) box.value = data.text || '';
+  if (!data) return;
+  box.value = data.text || '';
+  const d = $('#dialect');
+  if (d) d.value = data.dialect || '';
 }
 
 $('#save-glossary')?.addEventListener('click', async (e) => {
   const el = $('#glossary-status');
-  const out = await run(e.target, el, '保存中…', () => api.saveGlossary($('#glossary').value));
+  const out = await run(e.target, el, '保存中…', () => api.saveGlossary($('#glossary').value, $('#dialect')?.value || ''));
   if (out) status(el, `保存しました（${out.count}件、うち誤りの登録${out.variants}件）`, 'ok');
 });
 

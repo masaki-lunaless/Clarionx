@@ -60,6 +60,7 @@ function stubDB() {
       if (has('FROM criteria WHERE id')) return missingRow === 'criteria' ? null : rows.criteria;
       if (has('FROM modes m JOIN criteria')) return missingRow === 'modes' ? null : rows.mode;
       if (has('FROM questions WHERE id')) return { id: 'q1', case_id: 'case1', turning_point_id: 'tp1', seq: 0 };
+      if (has('FROM glossary WHERE client')) return { text: 'ヴァンドーム青山 = バンドーム', dialect: '関西弁。ほんま、なんぼ、〜やねん、おおきに' };
       if (has('COUNT(*) AS n')) return { n: 0 };
       return null;
     }
@@ -105,6 +106,8 @@ const env = {
 };
 
 let lastTts = null;
+// systemはキャッシュを効かせるため配列で送ることがある
+const systemText = (body) => (Array.isArray(body?.system) ? body.system.map((b) => b.text).join('') : body?.system || '');
 let lastClaude = null;
 let brokenTurningPoints = false;
 
@@ -255,6 +258,15 @@ check('採点: 範囲外の減点は丸める', computeTotal({ closed: true, per
 
 check('feedback: 保存できる', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'off', scoring: 'agree', note: '客が素直すぎる' }) })).status === 200);
 check('feedback: 不正な値は400', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'とても良い' }) })).status === 400);
+
+// --- 方言 ---
+const dialectCfg = await (await call('/api/glossary')).json();
+check('方言: マスタと一緒に返る', dialectCfg.dialect.includes('関西弁'), JSON.stringify(dialectCfg));
+await post('/api/cases/case1/format', {});
+check('方言: 整形プロンプトに載る', lastClaude.messages[0].content.includes('標準語に直さないでください'), lastClaude.messages[0].content.slice(-200));
+check('方言: 整形の指示に方言保持がある', systemText(lastClaude).includes('方言を標準語に直さない'));
+await post('/api/runs', { modeId: 'mode1' });
+check('方言: 客も同じ言葉づかいで話す', systemText(lastClaude).includes('この地域の言葉で話す'), systemText(lastClaude).slice(0, 200));
 
 // --- ブランド・用語マスタ ---
 const gl = parseGlossary(`

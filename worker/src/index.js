@@ -173,9 +173,11 @@ function requireString(value, name, max = MAX_TRANSCRIPT_CHARS) {
  */
 async function transcribeIfAudio(env, client, body) {
   if (!body.__audio) return '';
-  const entries = db.parseGlossary(await db.getGlossary(env, client));
+  const { text, dialect } = await db.getGlossary(env, client);
+  const entries = db.parseGlossary(text);
   const names = entries.map((e) => e.canonical).join('、');
-  const prompt = [names, body.vocabulary].filter(Boolean).join('、');
+  // 方言の例文を先に置くと、Whisperがその調子を引き継いで標準語に直しにくくなる
+  const prompt = [dialect, names, body.vocabulary].filter(Boolean).join('、');
   return transcribe(env, body.__audio, { prompt, filename: body.__filename });
 }
 
@@ -268,15 +270,15 @@ const routes = [
   ],
 
   // ブランド・用語マスタ（クライアント全体で共有）
-  ['GET', '/api/glossary', async ({ env, auth }) => ({ text: await db.getGlossary(env, auth.client) })],
+  ['GET', '/api/glossary', async ({ env, auth }) => db.getGlossary(env, auth.client)],
 
   [
     'POST',
     '/api/glossary',
     async ({ env, auth, body }) => {
       requireAdmin(auth); // 全員に効くので管理者限定にできるようにしておく
-      await db.saveGlossary(env, auth.client, body.text);
-      const entries = db.parseGlossary(body.text);
+      await db.saveGlossary(env, auth.client, { text: body.text, dialect: body.dialect });
+      const entries = db.parseGlossary(body.text ?? (await db.getGlossary(env, auth.client)).text);
       return { ok: true, count: entries.length, variants: entries.reduce((n, e) => n + e.variants.length, 0) };
     },
   ],
@@ -307,9 +309,14 @@ const routes = [
     async ({ env, auth, params }) => {
       const target = await db.getCase(env, auth.client, params.id);
       const transcript = requireString(target.transcript, '書き起こし');
-      const glossary = db.parseGlossary(await db.getGlossary(env, auth.client));
+      const cfg = await db.getGlossary(env, auth.client);
       const formatted = await generateText(env, {
-        ...formatTranscriptRequest({ transcript, context: contextOf(target), glossary }),
+        ...formatTranscriptRequest({
+          transcript,
+          context: contextOf(target),
+          glossary: db.parseGlossary(cfg.text),
+          dialect: cfg.dialect,
+        }),
         model: MODELS.chat,
         maxTokens: 16000,
         effort: EFFORT.analysis,
@@ -502,7 +509,8 @@ const routes = [
         criteriaId: mode.criteria_id,
         trainee: String(body.trainee || '').slice(0, 100),
       });
-      const turn = await speakAsCustomer(env, mode, [], { opening: true });
+      const { dialect } = await db.getGlossary(env, auth.client);
+      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect });
       const history = [{ role: 'customer', text: turn.replyText }];
       await db.saveRun(env, auth.client, runId, { history });
       return { runId, mode: modeSummary(mode), history, ...turn };
@@ -524,7 +532,8 @@ const routes = [
       if (!text) throw new ApiError(400, '発話（音声またはテキスト）が必要です');
 
       const history = [...run.history, { role: 'trainee', text }];
-      const turn = await speakAsCustomer(env, mode, history, {});
+      const { dialect } = await db.getGlossary(env, auth.client);
+      const turn = await speakAsCustomer(env, mode, history, { dialect });
       history.push({ role: 'customer', text: turn.replyText });
       await db.saveRun(env, auth.client, params.id, { history });
       return { transcript: text, history, ...turn };
@@ -656,7 +665,7 @@ export function stripStageDirections(text) {
 }
 
 /** 客役の1発話を作り、読み上げ音声まで用意する */
-async function speakAsCustomer(env, mode, history, { opening }) {
+async function speakAsCustomer(env, mode, history, { opening, dialect }) {
   const messages = history.map((m) => ({
     role: m.role === 'trainee' ? 'user' : 'assistant',
     content: String(m.text || '').slice(0, 4000),
@@ -669,6 +678,7 @@ async function speakAsCustomer(env, mode, history, { opening }) {
       customerType: mode.customer_type,
       scenario: mode.scenario,
       criteria: mode.criteria_markdown,
+      dialect,
     }),
     messages: messages.slice(-40),
     maxTokens: 400,

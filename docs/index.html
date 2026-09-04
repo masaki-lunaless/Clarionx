@@ -234,6 +234,14 @@
         Excelから貼り付けられます。<strong>ここに載っている語だけが自動で直され、載っていない固有名詞は触りません。</strong>
       </p>
       <textarea class="input textarea-lg" id="glossary" placeholder="ヴァンドーム青山 = バンドーム, バンドーム青山&#10;スタージュエリー = チェスタージュエリー&#10;グッチ&#10;カルティエ = カルチェ"></textarea>
+
+      <label class="label">この店の言葉づかい・方言
+        <input class="input" id="dialect" placeholder="例：関西弁。ほんま、なんぼ、〜やねん、せやなあ、おおきに">
+      </label>
+      <p class="hint">
+        入れておくと、<strong>書き起こしが標準語に直されるのを防ぎます</strong>。ロープレのお客様も同じ言葉づかいで話します。
+        方言そのものが判断基準の材料になるため、標準語に均されると本人の言葉が失われます。
+      </p>
       <div class="row row-actions">
         <button class="btn btn-primary" id="save-glossary">マスタを保存</button>
         <span class="status" id="glossary-status"></span>

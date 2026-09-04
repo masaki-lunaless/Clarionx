@@ -371,17 +371,23 @@ export async function feedbackForCriteria(env, client, criteriaIds) {
 /* ------------------------- ブランド・用語マスタ --------------------------- */
 
 export async function getGlossary(env, client) {
-  const row = await db(env).prepare('SELECT text FROM glossary WHERE client = ?').bind(client).first();
-  return row?.text || '';
+  const row = await db(env).prepare('SELECT text, dialect FROM glossary WHERE client = ?').bind(client).first();
+  return { text: row?.text || '', dialect: row?.dialect || '' };
 }
 
-export async function saveGlossary(env, client, text) {
+export async function saveGlossary(env, client, { text, dialect }) {
+  const cur = await getGlossary(env, client);
   await db(env)
     .prepare(
-      `INSERT INTO glossary (client, text, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(client) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+      `INSERT INTO glossary (client, text, dialect, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(client) DO UPDATE SET text = excluded.text, dialect = excluded.dialect, updated_at = excluded.updated_at`,
     )
-    .bind(client, String(text || '').slice(0, 100000), now())
+    .bind(
+      client,
+      String(text ?? cur.text).slice(0, 100000),
+      String(dialect ?? cur.dialect).slice(0, 2000),
+      now(),
+    )
     .run();
 }
 

@@ -105,3 +105,7 @@ CREATE TABLE IF NOT EXISTS glossary (
   text       TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+-- 方言（後から追加）。標準語に直されると本人の言葉が失われるため、
+-- 書き起こし・整形・ロープレの3箇所でこの指定を使う。
+ALTER TABLE glossary ADD COLUMN dialect TEXT NOT NULL DEFAULT '';
