@@ -51,6 +51,8 @@ async function upload(path, { audio, payload, filename }) {
 
 export const api = {
   config: () => request('GET', '/api/config'),
+  getGlossary: () => request('GET', '/api/glossary'),
+  saveGlossary: (text) => request('POST', '/api/glossary', { text }),
 
   // 1. 蓄積
   listCases: () => request('GET', '/api/cases'),

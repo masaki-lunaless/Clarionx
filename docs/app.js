@@ -107,6 +107,20 @@ const extractOptions = () => ({
   trim: settings.get('trim') !== false,
 });
 
+// ブランド・用語マスタ（Worker側に保存され、全員で共有される）
+async function loadGlossary() {
+  const box = $('#glossary');
+  if (!box) return;
+  const data = await api.getGlossary().catch(() => null);
+  if (data) box.value = data.text || '';
+}
+
+$('#save-glossary')?.addEventListener('click', async (e) => {
+  const el = $('#glossary-status');
+  const out = await run(e.target, el, '保存中…', () => api.saveGlossary($('#glossary').value));
+  if (out) status(el, `保存しました（${out.count}件、うち誤りの登録${out.variants}件）`, 'ok');
+});
+
 $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
   const cfg = await run(e.target, el, '接続中…', () => api.config());
@@ -115,6 +129,7 @@ $('#test-connection').addEventListener('click', async (e) => {
   setConnected(true);
   status(el, `接続OK — ${cfg.client} / 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${cfg.admin ? ' / 管理者' : ''}`, 'ok');
   await refreshAll();
+  await loadGlossary();
   // 初回は練習から触ってもらうのが分かりやすい
   if (!cases.length && modes.length) await activateTab('practice');
 });
@@ -975,6 +990,7 @@ async function refreshAll() {
     applyConfig(await api.config());
     setConnected(true);
     await refreshAll();
+    await loadGlossary();
   } catch (err) {
     setConnected(false, `サーバーに接続できません：${err.message}`);
     await activateTab('settings');

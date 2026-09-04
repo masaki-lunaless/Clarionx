@@ -78,6 +78,26 @@ const INTERVIEW_SYSTEM = `あなたは、接客のトップ人材が持つ暗黙
  * 「誰がいつ何を言ったか」を前提にした①の処理が働かない。
  */
 /**
+ * 表記マスタをプロンプトに載せる形にする。
+ * 聞き取りの誤りをここに載っている語だけ直させる。載っていない語は触らせない。
+ */
+export function glossaryBlock(entries) {
+  if (!entries?.length) return '';
+  const lines = entries
+    .filter((e) => e.variants.length)
+    .map((e) => `- ${e.variants.join('、')} → ${e.canonical}`);
+  const names = entries.map((e) => e.canonical).join('、');
+  return `
+
+【表記マスタ】
+この店で使う正式表記です。書き起こしがこれと違う形になっていたら、マスタの表記に直してください。
+マスタに無い固有名詞は、誤っていそうでも直さないでください。
+
+正式表記：${names}
+${lines.length ? `\nよくある誤り：\n${lines.join('\n')}` : ''}`;
+}
+
+/**
  * 素材の濃さを見立てる。
  * 通し録画には、判断が起きていない区間（事務処理・会計・見送りだけ）が大量に含まれる。
  * そこに転換点検出をかけても浅い結果しか出ないため、先に選り分ける。
@@ -117,7 +137,7 @@ export function assessTranscriptRequest({ transcript }) {
   };
 }
 
-export function formatTranscriptRequest({ transcript, context }) {
+export function formatTranscriptRequest({ transcript, context, glossary }) {
   return {
     system: `あなたは、接客の録音から起こした文字列を、読める形に整える校正者です。
 
@@ -129,6 +149,7 @@ export function formatTranscriptRequest({ transcript, context }) {
 【やってはいけないこと（最重要）】
 - 聞き取れた言葉を書き換えない。言い回し・語尾・言い淀みはそのまま残す
 - 固有名詞が誤っていそうでも直さない。推測で正しい名前に置き換えない
+  （ただし下の「表記マスタ」に載っている語だけは例外。マスタの表記に揃える）
 - 発話を要約・省略しない。順番も変えない
 - どちらが話したか判断できない発話は「?：」を付ける。無理に決めない
 
@@ -137,7 +158,7 @@ export function formatTranscriptRequest({ transcript, context }) {
     messages: [
       {
         role: 'user',
-        content: `次の書き起こしを整えてください。${context ? `\n\n【前提】\n${context}` : ''}
+        content: `次の書き起こしを整えてください。${context ? `\n\n【前提】\n${context}` : ''}${glossaryBlock(glossary)}
 
 【書き起こし】
 ${transcript}`,

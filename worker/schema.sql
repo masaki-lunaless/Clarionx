@@ -96,3 +96,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_criteria ON runs (criteria_id);
 -- 素材の濃さ（後から追加）。判断が起きている場面が含まれているかの見立て。
 -- 50時間の録画から、インタビューする価値のある区間を選ぶために使う。
 ALTER TABLE cases ADD COLUMN assessment TEXT;
+
+-- ブランド・用語マスタ（後から追加）。クライアントごとに1つ。
+-- 「正式表記 = よくある誤り1, 誤り2」の行を並べたテキストで持つ。
+-- Excelからの貼り付けで一気に入れられるよう、構造化せずテキストのまま置く。
+CREATE TABLE IF NOT EXISTS glossary (
+  client     TEXT PRIMARY KEY,
+  text       TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);

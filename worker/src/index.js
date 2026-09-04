@@ -16,6 +16,7 @@ import {
   criteriaRequest,
   fillQuestionsRequest,
   formatTranscriptRequest,
+  glossaryBlock,
   followUpRequest,
   roleplaySystemPrompt,
   scoringRequest,
@@ -166,10 +167,16 @@ function requireString(value, name, max = MAX_TRANSCRIPT_CHARS) {
   return value.trim();
 }
 
-/** 音声は書き起こしたら破棄する。監視カメラ録音を保持しない方針のため保存はしない。 */
-async function transcribeIfAudio(env, body) {
+/**
+ * 音声は書き起こしたら破棄する。監視カメラ録音を保持しない方針のため保存はしない。
+ * ブランド・用語マスタをWhisperに先渡しすると、固有名詞の認識精度が上がる。
+ */
+async function transcribeIfAudio(env, client, body) {
   if (!body.__audio) return '';
-  return transcribe(env, body.__audio, { prompt: body.vocabulary, filename: body.__filename });
+  const entries = db.parseGlossary(await db.getGlossary(env, client));
+  const names = entries.map((e) => e.canonical).join('、');
+  const prompt = [names, body.vocabulary].filter(Boolean).join('、');
+  return transcribe(env, body.__audio, { prompt, filename: body.__filename });
 }
 
 function criteriaToMarkdown(doc) {
@@ -213,7 +220,7 @@ const routes = [
     'POST',
     '/api/cases',
     async ({ env, auth, body }) => {
-      const transcribed = await transcribeIfAudio(env, body);
+      const transcribed = await transcribeIfAudio(env, auth.client, body);
       const transcript = [body.transcript, transcribed].filter(Boolean).join('\n').trim();
       return {
         case: await db.createCase(env, auth.client, {
@@ -249,7 +256,7 @@ const routes = [
     '/api/cases/:id/transcribe',
     async ({ env, auth, params, body }) => {
       if (!body.__audio) throw new ApiError(400, '音声ファイルが必要です');
-      const text = await transcribeIfAudio(env, body);
+      const text = await transcribeIfAudio(env, auth.client, body);
       if (!text) {
         // Whisperの誤出力を除いた結果、何も残らなかった＝話し声が入っていない
         throw new ApiError(422, 'この音声からは話し声を検出できませんでした。録音の音量や内容を確認してください');
@@ -257,6 +264,20 @@ const routes = [
       const current = await db.getCase(env, auth.client, params.id);
       const transcript = [current.transcript, text].filter(Boolean).join('\n');
       return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };
+    },
+  ],
+
+  // ブランド・用語マスタ（クライアント全体で共有）
+  ['GET', '/api/glossary', async ({ env, auth }) => ({ text: await db.getGlossary(env, auth.client) })],
+
+  [
+    'POST',
+    '/api/glossary',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth); // 全員に効くので管理者限定にできるようにしておく
+      await db.saveGlossary(env, auth.client, body.text);
+      const entries = db.parseGlossary(body.text);
+      return { ok: true, count: entries.length, variants: entries.reduce((n, e) => n + e.variants.length, 0) };
     },
   ],
 
@@ -286,8 +307,9 @@ const routes = [
     async ({ env, auth, params }) => {
       const target = await db.getCase(env, auth.client, params.id);
       const transcript = requireString(target.transcript, '書き起こし');
+      const glossary = db.parseGlossary(await db.getGlossary(env, auth.client));
       const formatted = await generateText(env, {
-        ...formatTranscriptRequest({ transcript, context: contextOf(target) }),
+        ...formatTranscriptRequest({ transcript, context: contextOf(target), glossary }),
         model: MODELS.chat,
         maxTokens: 16000,
         effort: EFFORT.analysis,
@@ -498,7 +520,7 @@ const routes = [
       const mode = await db.getMode(env, auth.client, run.mode_id);
 
       let text = typeof body.text === 'string' ? body.text.trim() : '';
-      if (!text) text = await transcribeIfAudio(env, body);
+      if (!text) text = await transcribeIfAudio(env, auth.client, body);
       if (!text) throw new ApiError(400, '発話（音声またはテキスト）が必要です');
 
       const history = [...run.history, { role: 'trainee', text }];

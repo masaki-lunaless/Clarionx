@@ -227,6 +227,19 @@
         <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
       </label>
       <hr>
+      <h2>ブランド・用語マスタ</h2>
+      <p class="hint">
+        全員で共有されます。書き起こしの精度向上と、表記揺れの統一に使われます。<br>
+        1行に1件、<code>正式表記 = よくある誤り1, 誤り2</code> の形式。誤りが無ければ正式表記だけでも構いません。
+        Excelから貼り付けられます。<strong>ここに載っている語だけが自動で直され、載っていない固有名詞は触りません。</strong>
+      </p>
+      <textarea class="input textarea-lg" id="glossary" placeholder="ヴァンドーム青山 = バンドーム, バンドーム青山&#10;スタージュエリー = チェスタージュエリー&#10;グッチ&#10;カルティエ = カルチェ"></textarea>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="save-glossary">マスタを保存</button>
+        <span class="status" id="glossary-status"></span>
+      </div>
+
+      <hr>
       <h2>取り込みの調整</h2>
       <p class="hint">音声ファイルを読み込むときの処理です。既定のままで大半は動きます。素材に合わない場合だけ触ってください。</p>
       <div class="fb-grid">

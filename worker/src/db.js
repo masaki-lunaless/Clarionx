@@ -367,3 +367,42 @@ export async function feedbackForCriteria(env, client, criteriaIds) {
     .all();
   return results || [];
 }
+
+/* ------------------------- ブランド・用語マスタ --------------------------- */
+
+export async function getGlossary(env, client) {
+  const row = await db(env).prepare('SELECT text FROM glossary WHERE client = ?').bind(client).first();
+  return row?.text || '';
+}
+
+export async function saveGlossary(env, client, text) {
+  await db(env)
+    .prepare(
+      `INSERT INTO glossary (client, text, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(client) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+    )
+    .bind(client, String(text || '').slice(0, 100000), now())
+    .run();
+}
+
+/**
+ * 「正式表記 = 誤り1, 誤り2」の行を解釈する。
+ * 「=」が無い行は正式表記だけの登録として扱う。
+ * Excelからの貼り付けを想定し、全角の記号も受ける。
+ */
+export function parseGlossary(text) {
+  const entries = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const [head, tail] = line.split(/\s*[=＝]\s*/, 2);
+    const canonical = (head || '').trim();
+    if (!canonical) continue;
+    const variants = (tail || '')
+      .split(/[,、，]/)
+      .map((v) => v.trim())
+      .filter((v) => v && v !== canonical);
+    entries.push({ canonical, variants });
+  }
+  return entries;
+}

@@ -2,6 +2,8 @@
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
 import worker, { SCORING, computeTotal, stripPreamble, stripStageDirections } from '../src/index.js';
 import { cleanTranscript } from '../src/audio.js';
+import { parseGlossary } from '../src/db.js';
+import { glossaryBlock } from '../src/prompts.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -253,6 +255,23 @@ check('採点: 範囲外の減点は丸める', computeTotal({ closed: true, per
 
 check('feedback: 保存できる', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'off', scoring: 'agree', note: '客が素直すぎる' }) })).status === 200);
 check('feedback: 不正な値は400', (await call('/api/runs/run1/feedback', { method: 'PATCH', body: JSON.stringify({ realism: 'とても良い' }) })).status === 400);
+
+// --- ブランド・用語マスタ ---
+const gl = parseGlossary(`
+# コメント行は無視される
+ヴァンドーム青山 = バンドーム, バンドーム青山
+スタージュエリー ＝ チェスタージュエリー、スタージュエリ
+グッチ
+`);
+check('マスタ: 行数', gl.length === 3, JSON.stringify(gl));
+check('マスタ: 誤りの一覧', gl[0].variants.join('/') === 'バンドーム/バンドーム青山', JSON.stringify(gl[0]));
+check('マスタ: 全角の記号も受ける', gl[1].variants.length === 2, JSON.stringify(gl[1]));
+check('マスタ: 誤りなしの行も登録できる', gl[2].canonical === 'グッチ' && gl[2].variants.length === 0);
+check('マスタ: コメントと空行は無視', !JSON.stringify(gl).includes('コメント'));
+const block = glossaryBlock(gl);
+check('マスタ: プロンプトに正式表記が並ぶ', block.includes('ヴァンドーム青山、スタージュエリー、グッチ'), block.slice(0, 120));
+check('マスタ: 誤り→正式の対応が載る', block.includes('バンドーム、バンドーム青山 → ヴァンドーム青山'));
+check('マスタ: 空なら何も足さない', glossaryBlock([]) === '');
 
 // --- 整形結果の前置き除去 ---
 check('前置き: 説明行を落とす',
