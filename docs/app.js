@@ -283,8 +283,8 @@ let lastExtract = null;
 function renderExtractReport(file, extracted, note) {
   const box = $('#extract-report');
   if (!box) return;
-  const d = extracted.diagnostics || {};
-  box.innerHTML = `<div class="card">
+  const d = extracted?.diagnostics || {};
+  box.insertAdjacentHTML('beforeend', `<div class="card">
     <div class="card-head"><h3>取り込みの結果：${esc(file.name)}</h3></div>
     ${note ? `<p class="why">${esc(note)}</p>` : ''}
     <div class="diag">${Object.entries(d)
@@ -292,8 +292,9 @@ function renderExtractReport(file, extracted, note) {
       .join('')}</div>
     <p class="hint">下がWhisperに送っている音声そのものです。聞こえ方を確認してください。</p>
     <div class="chunk-players" id="chunk-players"></div>
-    <div class="row row-end"><button class="btn btn-ghost btn-sm" id="dl-chunks">処理後の音声を保存</button></div>
-  </div>`;
+    ${extracted ? '<div class="row row-end"><button class="btn btn-ghost btn-sm" id="dl-chunks">処理後の音声を保存</button></div>' : ''}
+  </div>`);
+  if (!extracted) return;
   const players = $('#chunk-players');
   extracted.chunks.slice(0, 3).forEach((c, i) => {
     const el = document.createElement('audio');
@@ -312,30 +313,22 @@ function renderExtractReport(file, extracted, note) {
   });
 }
 
-$('#audio-file').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file || !current.caseId) return;
-  const el = $('#capture-status');
-
-  // 映像込みのMP4をそのまま送ると上限に当たるので、ブラウザ内で音声だけ抜いて分割する
-  if (!canExtract()) {
-    status(el, 'このブラウザでは動画から音声を取り出せません。tools/extract-audio.sh で変換してから読み込んでください', 'error');
-    return;
-  }
-
+/**
+ * 1ファイルを取り込む。抽出 → 分割 → 順に書き起こして案件へ追記。
+ * 分割録音を複数まとめて入れられるよう、1ファイル分を関数にしてある。
+ */
+async function importOneFile(file, el, prefix) {
   let extracted;
   try {
     extracted = await extractChunks(file, {
-      onProgress: (msg) => status(el, `${file.name}：${msg}`),
+      onProgress: (msg) => status(el, `${prefix}${file.name}：${msg}`),
       ...extractOptions(),
     });
   } catch (err) {
-    status(el, err.message, 'error');
-    return;
+    renderExtractReport(file, null, err.message);
+    return { ok: false, error: err.message };
   }
 
-  lastExtract = { file, extracted };
   renderExtractReport(file, extracted);
   const { chunks, seconds, originalSeconds, gain } = extracted;
   const trimmed = originalSeconds - seconds;
@@ -344,22 +337,61 @@ $('#audio-file').addEventListener('change', async (e) => {
     (gain > 1.05 ? `${trimmed > 30 ? '／' : ''}音量を${gain.toFixed(1)}倍に調整` : '') +
     '）';
 
-  const texts = [];
   for (const [i, chunk] of chunks.entries()) {
-    status(el, `書き起こし中… ${i + 1}/${chunks.length} 個目 ${note}`);
+    status(el, `${prefix}${file.name}：書き起こし中… ${i + 1}/${chunks.length} 個目 ${note}`);
     try {
       const data = await api.transcribe(current.caseId, chunk, { vocabulary: settings.get('vocabulary') }, `part${i + 1}.wav`);
       current.case = data.case;
-      texts.push(data.added);
       $('#case-transcript').value = data.case.transcript;
     } catch (err) {
-      // 途中で失敗しても、そこまでの書き起こしは案件に残っている
-      status(el, `${i + 1}個目で失敗：${err.message}（${i}個目までは保存済み）`, 'error');
       renderExtractReport(file, extracted, '送った音声は下で再生できます。話し声が聞き取れない場合は、録音そのものに声が入っていないか、音量が足りていません。');
-      return;
+      return { ok: false, error: `${i + 1}個目で失敗：${err.message}`, partial: i };
     }
   }
-  status(el, `完了：${fmtDuration(seconds)} 分を ${chunks.length} 回に分けて書き起こしました ${note}`, 'ok');
+  return { ok: true, seconds, chunks: chunks.length };
+}
+
+$('#audio-file').addEventListener('change', async (e) => {
+  // 録音が分割されている場合に備え、複数まとめて受ける。
+  // 順番が狂うと会話が入れ替わるので、ファイル名を自然順（part2 < part10）に並べる。
+  const files = [...(e.target.files || [])].sort((a, b) =>
+    a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }),
+  );
+  e.target.value = '';
+  if (!files.length || !current.caseId) return;
+  const el = $('#capture-status');
+
+  if (!canExtract()) {
+    status(el, 'このブラウザでは動画から音声を取り出せません。tools/extract-audio.sh で変換してから読み込んでください', 'error');
+    return;
+  }
+
+  $('#extract-report').innerHTML = '';
+  if (files.length > 1) {
+    status(el, `${files.length}ファイルを順に取り込みます：${files.map((f) => f.name).join(' → ')}`);
+  }
+
+  const done = [];
+  const failed = [];
+  for (const [i, file] of files.entries()) {
+    const prefix = files.length > 1 ? `${i + 1}/${files.length} ` : '';
+    const res = await importOneFile(file, el, prefix);
+    (res.ok ? done : failed).push({ file, res });
+    // 分割録音は順番に意味があるため、途中で失敗したら止めて知らせる
+    if (!res.ok) break;
+  }
+
+  if (failed.length) {
+    const f = failed[0];
+    status(el, `${f.file.name} で中断しました：${f.res.error}（${done.length}ファイル分は保存済み）`, 'error');
+    return;
+  }
+  const total = done.reduce((n, d) => n + d.res.seconds, 0);
+  status(
+    el,
+    `完了：${done.length}ファイル・合計${fmtDuration(total)}を書き起こしました`,
+    'ok',
+  );
 });
 
 $('#format-btn').addEventListener('click', async (e) => {
