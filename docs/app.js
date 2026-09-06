@@ -79,6 +79,38 @@ function setConnected(ok, message) {
 
 $('#go-settings')?.addEventListener('click', () => activateTab('settings'));
 
+/* -------------------------------- 権限 ----------------------------------- */
+
+// 画面の出し分けはここ1箇所。data-requires に can のキーを書いておく。
+// 実際の制限はWorker側でかけているので、これは「見せない」だけ。
+let me = null;
+
+function applyPermissions() {
+  const can = me?.can || { capture: true, merge: true, masters: true, allRecords: true };
+  for (const el of $$('[data-requires]')) el.hidden = !can[el.dataset.requires];
+
+  // ログインしていれば実施者は個人コードで決まる。書き換えさせない
+  const traineeBox = $('#trainee');
+  if (traineeBox && me?.via === 'login') {
+    traineeBox.value = me.staff_name;
+    traineeBox.readOnly = true;
+    traineeBox.title = 'ログインした個人コードの名前です';
+  } else if (traineeBox) {
+    traineeBox.readOnly = false;
+  }
+
+  const who = $('#who');
+  if (who) {
+    who.hidden = !me || me.via !== 'login';
+    const roleLabel = (config.roles || []).find((r) => r.id === me?.role)?.label || '';
+    $('#who-name').textContent = me ? `${me.company_name}／${me.staff_name}（${roleLabel}${me.store ? `・${me.store}` : ''}）` : '';
+  }
+
+  // いま開いているタブが見えなくなったら、練習へ寄せる
+  const active = $('.tab.is-active');
+  if (active?.hidden) activateTab('practice');
+}
+
 /* --------------------------------- 設定 ---------------------------------- */
 
 for (const [key, sel] of Object.entries({ workerUrl: '#worker-url', token: '#access-token', vocabulary: '#vocabulary', trainee: '#trainee' })) {
@@ -128,13 +160,7 @@ $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
   const cfg = await run(e.target, el, '接続中…', () => api.config());
   if (!cfg) return;
-  applyConfig(cfg);
-  setConnected(true);
-  status(el, `接続OK — ${cfg.client} / 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}${cfg.admin ? ' / 管理者' : ''}`, 'ok');
-  await refreshAll();
-  await loadGlossary();
-  // 初回は練習から触ってもらうのが分かりやすい
-  if (!cases.length && modes.length) await activateTab('practice');
+  await afterConnect(cfg, el);
 });
 
 function applyConfig(cfg) {
@@ -146,7 +172,228 @@ function applyConfig(cfg) {
   fill($('#fb-scoring'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.scoring]);
   fill($('#mode-customer'), config.customerTypes);
   fill($('#mode-voice'), [{ value: '', label: 'Worker既定の声' }, ...config.voices]);
+  if (config.roles) fill($('#staff-role'), config.roles.map((r) => ({ value: r.id, label: r.label })));
+  me = cfg.me || me;
+  applyPermissions();
 }
+
+/* ------------------------- 商品・スタッフ・会社 --------------------------- */
+
+// 商品マスタは貼り付けテキストで総入れ替えする。用語マスタと同じ扱い方に揃えている
+const productLine = (p) =>
+  [p.category, p.brand, p.model, p.name, p.new_price, p.retention, p.notes].join('\t');
+
+async function loadProducts() {
+  const box = $('#products');
+  if (!box) return;
+  const data = await api.listProducts().catch(() => null);
+  if (!data) return;
+  box.value = data.products.map(productLine).join('\n');
+  status($('#products-status'), data.products.length ? `${data.products.length}件` : 'まだ空です');
+}
+
+$('#save-products')?.addEventListener('click', async (e) => {
+  const el = $('#products-status');
+  const out = await run(e.target, el, '保存中…', () => api.saveProducts($('#products').value));
+  if (out) {
+    status(el, `${out.count}件を登録しました`, 'ok');
+    await refreshModes();
+  }
+});
+
+$('#seed-products')?.addEventListener('click', async (e) => {
+  if (!confirm('いま登録されている商品をすべて消して、サンプル100点に入れ替えます。よろしいですか。')) return;
+  const el = $('#products-status');
+  const out = await run(e.target, el, '読み込み中…', () => api.seedProducts());
+  if (!out) return;
+  await loadProducts();
+  status(el, `${out.count}件を読み込みました。相場は現場に合わせて直してください`, 'ok');
+});
+
+// スタッフ
+let staffList = [];
+
+// 共有トークンで入った管理者は会社をまたいで面倒を見るので、対象を選ばせる。
+// ログインした管理者は自分の会社しか触れないので、選択欄は出さない
+let staffCompany = '';
+
+async function loadStaff() {
+  const table = $('#staff-table');
+  if (!table) return;
+  const data = await api.listStaff(staffCompany || undefined).catch(() => null);
+  if (!data) return;
+  staffCompany = data.company;
+  staffList = data.staff;
+  const roleLabel = (id) => (config.roles || []).find((r) => r.id === id)?.label || id;
+  table.innerHTML = `
+    <thead><tr><th>個人コード</th><th>氏名</th><th>店舗</th><th>権限</th><th>実施</th><th></th></tr></thead>
+    <tbody>${staffList
+      .map(
+        (st) => `<tr class="${st.active ? '' : 'is-off'}">
+          <td>${esc(st.code)}</td><td>${esc(st.name)}</td><td>${esc(st.store || '')}</td>
+          <td>
+            <select class="input input-sm" data-staff-role="${esc(st.id)}">
+              ${(config.roles || []).map((r) => `<option value="${esc(r.id)}" ${r.id === st.role ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
+            </select>
+          </td>
+          <td>${esc(st.run_count ?? 0)}回</td>
+          <td>
+            <button class="btn btn-ghost btn-sm" data-staff-toggle="${esc(st.id)}">${st.active ? '停止' : '再開'}</button>
+            <button class="btn btn-ghost btn-sm danger" data-staff-del="${esc(st.id)}">削除</button>
+          </td>
+        </tr>`,
+      )
+      .join('')}</tbody>`;
+  if (!staffList.length) status($('#staff-status'), `${staffCompany} にはまだ誰も登録されていません`);
+}
+
+$('#staff-table')?.addEventListener('change', async (e) => {
+  const id = e.target.dataset.staffRole;
+  if (!id) return;
+  const el = $('#staff-status');
+  const ok = await run(null, el, '変更中…', () => api.updateStaff(id, { role: e.target.value, company: staffCompany || undefined }));
+  // 権限を変えるとその人はログインし直しになる。黙って切れると理由が分からないので伝える
+  if (ok) status(el, '権限を変えました。その人は次回ログインから反映されます', 'ok');
+});
+
+$('#staff-table')?.addEventListener('click', async (e) => {
+  const el = $('#staff-status');
+  const toggle = e.target.dataset.staffToggle;
+  if (toggle) {
+    const target = staffList.find((st) => st.id === toggle);
+    if (await run(null, el, '変更中…', () => api.updateStaff(toggle, { active: !target.active, company: staffCompany || undefined }))) {
+      await loadStaff();
+      status(el, '変えました', 'ok');
+    }
+    return;
+  }
+  const del = e.target.dataset.staffDel;
+  if (!del) return;
+  const target = staffList.find((st) => st.id === del);
+  if (!confirm(`${target?.name || ''}（${target?.code || ''}）を削除します。実施記録は残ります。よろしいですか。`)) return;
+  if (await run(null, el, '削除中…', () => api.deleteStaff(del, staffCompany))) {
+    await loadStaff();
+    status(el, '削除しました', 'ok');
+  }
+});
+
+$('#add-staff')?.addEventListener('click', async (e) => {
+  const el = $('#staff-status');
+  const out = await run(e.target, el, '追加中…', () =>
+    api.createStaff({
+      code: $('#staff-code').value,
+      name: $('#staff-name').value,
+      store: $('#staff-store').value,
+      role: $('#staff-role').value,
+      company: staffCompany || undefined,
+    }),
+  );
+  if (!out) return;
+  $('#staff-code').value = '';
+  $('#staff-name').value = '';
+  await loadStaff();
+  status(el, '追加しました', 'ok');
+});
+
+// 会社
+async function loadCompanies() {
+  const table = $('#company-table');
+  if (!table) return;
+  const data = await api.listCompanies().catch(() => null);
+  if (!data) return;
+  // スタッフ管理の対象になる会社の一覧も、ここで作った結果から埋める
+  const picker = $('#staff-company');
+  if (picker && me?.via === 'token') {
+    $('#staff-company-wrap').hidden = false;
+    picker.innerHTML = data.companies.map((c) => `<option value="${esc(c.code)}" ${c.code === staffCompany ? 'selected' : ''}>${esc(c.name)}（${esc(c.code)}）</option>`).join('');
+    if (!data.companies.some((c) => c.code === staffCompany)) {
+      staffCompany = data.companies[0]?.code || '';
+      picker.value = staffCompany;
+      await loadStaff();
+    }
+  }
+
+  table.innerHTML = `
+    <thead><tr><th>会社コード</th><th>会社名</th><th>ナレッジ空間</th><th>人数</th><th>実施</th></tr></thead>
+    <tbody>${data.companies
+      .map(
+        (c) => `<tr>
+          <td>${esc(c.code)}</td><td>${esc(c.name)}</td><td>${esc(c.knowledge_space)}</td>
+          <td>${esc(c.staff_count ?? 0)}人</td><td>${esc(c.run_count ?? 0)}回</td>
+        </tr>`,
+      )
+      .join('')}</tbody>`;
+}
+
+$('#staff-company')?.addEventListener('change', async (e) => {
+  staffCompany = e.target.value;
+  await loadStaff();
+});
+
+$('#save-company')?.addEventListener('click', async (e) => {
+  const el = $('#company-status');
+  const out = await run(e.target, el, '登録中…', () =>
+    api.saveCompany({
+      code: $('#company-code').value,
+      name: $('#company-name').value,
+      password: $('#company-password').value,
+      knowledgeSpace: $('#company-space').value,
+    }),
+  );
+  if (!out) return;
+  $('#company-password').value = '';
+  await loadCompanies();
+  status(el, `${out.code} を登録しました`, 'ok');
+});
+
+/* ------------------------------- ログイン -------------------------------- */
+
+async function afterConnect(cfg, el) {
+  applyConfig(cfg);
+  setConnected(true);
+  status(
+    el,
+    `接続OK — ${cfg.me?.company_name || cfg.client} / 書き起こし:${cfg.stt ? '有効' : '未設定'} / 音声合成:${cfg.tts || '未設定'}`,
+    'ok',
+  );
+  await refreshAll();
+  if (me?.can?.masters) {
+    await loadGlossary();
+    await loadProducts();
+    await loadCompanies();
+    await loadStaff();
+  }
+  // 初回は練習から触ってもらうのが分かりやすい
+  if (!cases.length && modes.length) await activateTab('practice');
+}
+
+$('#login-btn')?.addEventListener('click', async (e) => {
+  const el = $('#login-status');
+  const out = await run(e.target, el, 'ログイン中…', () =>
+    api.login({
+      company: $('#login-company').value,
+      password: $('#login-password').value,
+      staffCode: $('#login-staff').value,
+    }),
+  );
+  if (!out) return;
+  settings.set('token', out.token);
+  settings.set('trainee', out.staff.name);
+  const traineeBox = $('#trainee');
+  if (traineeBox) traineeBox.value = out.staff.name;
+  $('#login-password').value = '';
+  const cfg = await api.config().catch(() => null);
+  if (cfg) await afterConnect(cfg, el);
+});
+
+$('#logout')?.addEventListener('click', async () => {
+  await api.logout().catch(() => {});
+  settings.set('token', '');
+  me = null;
+  applyPermissions();
+  setConnected(false, 'ログアウトしました。もう一度ログインしてください。');
+  activateTab('settings');
+});
 
 /* -------------------------------- ① 蓄積 -------------------------------- */
 
@@ -598,7 +845,7 @@ $('#text-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('#sen
 $('#score-run').addEventListener('click', async (e) => {
   const out = await run(e.target, $('#practice-status'), '採点中…（1分ほどかかります）', () => api.score(current.run));
   if (!out) return;
-  renderScore(out.score);
+  renderScore(out.score, out.item);
   $('#feedback-box').hidden = false;
   $('#fb-note').value = '';
   $('#fb-realism').value = '';
@@ -606,7 +853,37 @@ $('#score-run').addEventListener('click', async (e) => {
   status($('#fb-status'), '');
 });
 
-function renderScore(s) {
+const yen = (v) => `${Math.round(Number(v) || 0).toLocaleString('ja-JP')}円`;
+
+/**
+ * 品物と正解額は、練習中は伏せてあってここで初めて出る。
+ * 「何を、どの状態で、いくらが正解だったか」を並べて見せないと、
+ * 提示額の当たり外れが振り返れない。
+ */
+function renderItem(item, price) {
+  if (!item) return '';
+  const verdict = { fair: 'ok', low: 'ng', high: 'ng', none: '' }[price?.verdict] || '';
+  return `
+    <div class="card item-card">
+      <h4>この回の品物（練習中は伏せていました）</h4>
+      <p class="item-name"><strong>${esc([item.brand, item.name].filter(Boolean).join(' '))}</strong>${item.model ? `<span class="item-meta">型番 ${esc(item.model)}</span>` : ''}</p>
+      <div class="breakdown">
+        <span>状態：${esc(item.condition_label)}</span>
+        <span>付属品：${esc(item.accessory_label)}</span>
+        <span>新品価格：${esc(yen(item.new_price))}</span>
+      </div>
+      <div class="breakdown">
+        <span class="outcome ${verdict === 'ok' ? 'closed' : verdict === 'ng' ? 'unclosed' : ''}">
+          適正 ${esc(yen(item.low))}〜${esc(yen(item.high))}
+        </span>
+        <span>${esc(price?.message || '')}</span>
+      </div>
+      ${price?.quote ? `<p class="evidence">${esc(price.quote)}</p>` : ''}
+      ${item.notes ? `<p class="advice">→ 見どころ：${esc(item.notes)}</p>` : ''}
+    </div>`;
+}
+
+function renderScore(s, item) {
   const b = s.breakdown || {};
   $('#score-result').innerHTML = `
     <div class="card score">
@@ -614,6 +891,7 @@ function renderScore(s) {
       <div class="breakdown">
         <span class="outcome ${b.closed ? 'closed' : 'unclosed'}">${b.closed ? '成約' : '不成約'} ${b.closePenalty ? `−${b.closePenalty}` : '±0'}</span>
         <span>型の不一致 −${esc(b.axisPenalty ?? 0)}（上限−${esc(b.maxAxisPenalty ?? 90)}）</span>
+        ${b.maxPricePenalty ? `<span>査定額 −${esc(b.pricePenalty ?? 0)}（上限−${esc(b.maxPricePenalty)}）</span>` : ''}
       </div>
       ${s.closed_evidence ? `<p class="evidence">${esc(s.closed_evidence)}</p>` : ''}
       <div class="axes">
@@ -629,7 +907,8 @@ function renderScore(s) {
       </div>
       ${(s.good || []).length ? `<h4>良かった点</h4><ul>${s.good.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
       ${(s.next || []).length ? `<h4>次に意識すること</h4><ul>${s.next.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
-    </div>`;
+    </div>
+    ${renderItem(item, s.price)}`;
 }
 
 $('#fb-save').addEventListener('click', async (e) => {
@@ -780,7 +1059,7 @@ $('#create-mode-from').addEventListener('click', () => openModeDialog(current.cr
 
 /* ----------------------------- モード作成ダイアログ ---------------------- */
 
-function openModeDialog(criteriaId) {
+async function openModeDialog(criteriaId) {
   if (!criteriaList.length) {
     alert('先に③で判断基準を統合してください。');
     return;
@@ -788,7 +1067,39 @@ function openModeDialog(criteriaId) {
   if (criteriaId) $('#mode-criteria').value = criteriaId;
   $('#mode-name').value = '';
   $('#mode-scenario').value = '';
+  await fillProductPickers();
   $('#mode-dialog').showModal();
+}
+
+/**
+ * 品物の選び方を用意する。
+ * カテゴリだけ決めれば実施ごとにランダム、品物まで決めれば毎回同じものになる。
+ * 同じ品物で複数人を比べたいときだけ固定する。
+ */
+async function fillProductPickers() {
+  const catSel = $('#mode-category');
+  const prodSel = $('#mode-product');
+  if (!catSel || !prodSel) return;
+  const data = await api.listProducts().catch(() => null);
+  const products = data?.products || [];
+  const categories = data?.categories || [];
+  catSel.innerHTML = [`<option value="">すべてのカテゴリから</option>`, ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+
+  const renderProducts = () => {
+    const cat = catSel.value;
+    const pool = cat ? products.filter((p) => p.category === cat) : products;
+    prodSel.innerHTML = [
+      `<option value="">固定しない（毎回ランダム）</option>`,
+      ...pool.map((p) => `<option value="${esc(p.id)}">${esc([p.brand, p.name].filter(Boolean).join(' '))}</option>`),
+    ].join('');
+  };
+  renderProducts();
+  catSel.onchange = renderProducts;
+
+  if (!products.length) {
+    catSel.innerHTML = '<option value="">商品マスタが空です（設定タブで登録）</option>';
+    prodSel.innerHTML = '<option value="">—</option>';
+  }
 }
 
 $('#mode-dialog').addEventListener('close', async () => {
@@ -802,6 +1113,8 @@ $('#mode-dialog').addEventListener('close', async () => {
       customerType: $('#mode-customer').value,
       scenario: $('#mode-scenario').value,
       voice: $('#mode-voice').value,
+      productCategory: $('#mode-category')?.value || '',
+      productId: $('#mode-product')?.value || '',
     })
     .catch((err) => {
       alert(`作成できませんでした：${err.message}`);
@@ -813,11 +1126,19 @@ $('#mode-dialog').addEventListener('close', async () => {
 /* --------------------------------- 記録 ---------------------------------- */
 
 let records = [];
+let recordScope = 'company';
 
 const OUTCOME = (r) => (r.score ? (r.score.breakdown?.closed ? '成約' : '不成約') : '—');
 const fbLabel = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value === v)?.label || '';
 const typeLabel = (id) => config.customerTypes.find((t) => t.id === id)?.label || id || '';
 const when = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
+
+// 採点が済むまで品物は伏せたまま返ってくる（Worker側の visibleItem）
+const itemLabel = (item) => {
+  if (!item) return '—';
+  if (item.hidden) return '採点後に開示';
+  return [item.brand, item.name].filter(Boolean).join(' ');
+};
 
 async function refreshRecords() {
   await refreshCriteria();
@@ -830,6 +1151,7 @@ async function refreshRecords() {
   const data = await run(null, $('#records-status'), '読み込み中…', () => api.listRuns(sel.value || undefined));
   if (!data) return;
   records = data.runs;
+  recordScope = data.scope || 'company';
   renderRecords();
 }
 
@@ -841,12 +1163,12 @@ function renderRecords() {
   const closed = scored.filter((r) => r.score.breakdown?.closed).length;
   const avg = scored.length ? Math.round(scored.reduce((n, r) => n + r.score.total, 0) / scored.length) : 0;
   $('#records-summary').innerHTML = records.length
-    ? `<span>${records.length}件（採点済み${scored.length}件）</span>
+    ? `<span>${recordScope === 'self' ? '自分の記録 ' : ''}${records.length}件（採点済み${scored.length}件）</span>
        <span>成約 ${closed}／${scored.length}${scored.length ? `（${Math.round((closed / scored.length) * 100)}%）` : ''}</span>
        <span>平均 ${avg}点</span>`
     : '';
 
-  const head = ['日時', '実施者', 'モード', '客タイプ', '成約', '総合', '型の減点', '発話', '客の再現度', '採点の納得感', 'コメント'];
+  const head = ['日時', '実施者', 'モード', '客タイプ', '品物', '成約', '総合', '型の減点', '査定額', '発話', '客の再現度', '採点の納得感', 'コメント'];
   $('#records-table').innerHTML = `
     <thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
     <tbody>${records
@@ -856,9 +1178,11 @@ function renderRecords() {
           <td>${esc(r.trainee || '—')}</td>
           <td>${esc(r.mode_name || '—')}</td>
           <td>${esc(typeLabel(r.customer_type))}</td>
+          <td>${esc(itemLabel(r.item))}</td>
           <td>${r.score ? `<span class="pill ${r.score.breakdown?.closed ? 'yes' : 'no'}">${OUTCOME(r)}</span>` : '—'}</td>
           <td class="num">${r.score ? esc(r.score.total) : '—'}</td>
           <td class="num">${r.score ? `−${esc(r.score.breakdown?.axisPenalty ?? 0)}` : '—'}</td>
+          <td class="num">${r.score?.breakdown?.maxPricePenalty ? `−${esc(r.score.breakdown.pricePenalty ?? 0)}` : '—'}</td>
           <td class="num">${r.history.length}</td>
           <td>${esc(fbLabel('realism', r.fb_realism))}</td>
           <td>${esc(fbLabel('scoring', r.fb_scoring))}</td>
@@ -878,7 +1202,7 @@ $('#records-table').addEventListener('click', (e) => {
   const r = records.find((x) => x.id === tr.dataset.id);
   const detail = document.createElement('tr');
   detail.className = 'detail-row';
-  detail.innerHTML = `<td colspan="11">
+  detail.innerHTML = `<td colspan="13">
     <div class="detail-convo">${r.history
       .map((m) => `<p><span class="who">${m.role === 'trainee' ? '店員' : '客　'}：</span>${esc(m.text)}</p>`)
       .join('')}</div>
@@ -889,19 +1213,25 @@ $('#records-table').addEventListener('click', (e) => {
           <span class="deduction ${a.deduction ? '' : 'zero'}">${a.deduction ? `−${esc(a.deduction)}` : '減点なし'}</span></div>
           <p class="evidence">${esc(a.evidence)}</p><p class="advice">→ ${esc(a.advice)}</p></div>`)
         .join('')}</div>` : '<p class="hint">この回は採点されていません。</p>'}
+    ${r.item && !r.item.hidden ? renderItem(r.item, r.score?.price) : ''}
     ${r.fb_note ? `<p class="hint">フィードバック：${esc(r.fb_note)}</p>` : ''}
   </td>`;
   tr.after(detail);
 });
 
 $('#records-csv').addEventListener('click', () => {
-  const head = ['日時', '実施者', 'モード', '判断基準', '客タイプ', '成約', '総合点', '型の減点', '発話数', '客の再現度', '採点の納得感', 'コメント', '総評'];
-  const rows = records.map((r) => [
-    when(r.created_at), r.trainee, r.mode_name, r.criteria_title, typeLabel(r.customer_type),
-    r.score ? OUTCOME(r) : '', r.score?.total ?? '', r.score?.breakdown?.axisPenalty ?? '',
-    r.history.length, fbLabel('realism', r.fb_realism), fbLabel('scoring', r.fb_scoring),
-    r.fb_note, r.score?.headline ?? '',
-  ]);
+  const head = ['日時', '実施者', '店舗', 'モード', '判断基準', '客タイプ', '品物', '状態', '適正下限', '適正上限', '提示額', '成約', '総合点', '型の減点', '査定額の減点', '発話数', '客の再現度', '採点の納得感', 'コメント', '総評'];
+  const rows = records.map((r) => {
+    const it = r.item && !r.item.hidden ? r.item : null;
+    return [
+      when(r.created_at), r.trainee, r.store, r.mode_name, r.criteria_title, typeLabel(r.customer_type),
+      itemLabel(r.item), it?.condition_label ?? '', it?.low ?? '', it?.high ?? '', r.score?.price?.offered ?? '',
+      r.score ? OUTCOME(r) : '', r.score?.total ?? '', r.score?.breakdown?.axisPenalty ?? '',
+      r.score?.breakdown?.pricePenalty ?? '',
+      r.history.length, fbLabel('realism', r.fb_realism), fbLabel('scoring', r.fb_scoring),
+      r.fb_note, r.score?.headline ?? '',
+    ];
+  });
   const csv = [head, ...rows]
     .map((row) => row.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
     .join('\r\n');
@@ -1022,10 +1352,7 @@ async function refreshAll() {
     return;
   }
   try {
-    applyConfig(await api.config());
-    setConnected(true);
-    await refreshAll();
-    await loadGlossary();
+    await afterConnect(await api.config(), $('#settings-status'));
   } catch (err) {
     setConnected(false, `サーバーに接続できません：${err.message}`);
     await activateTab('settings');

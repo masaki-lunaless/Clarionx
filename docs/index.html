@@ -13,10 +13,14 @@
     <span class="logo">Clarion</span>
     <span class="tagline">聞いて溜める・練習する・束ねる</span>
   </div>
+  <div class="who" id="who" hidden>
+    <span id="who-name"></span>
+    <button class="btn btn-ghost btn-sm" id="logout">ログアウト</button>
+  </div>
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-tab="capture" role="tab">① 接客を集める</button>
+    <button class="tab is-active" data-tab="capture" role="tab" data-requires="capture">① 接客を集める</button>
     <button class="tab" data-tab="practice" role="tab">② 練習する</button>
-    <button class="tab" data-tab="merge" role="tab">③ 基準をつくる</button>
+    <button class="tab" data-tab="merge" role="tab" data-requires="merge">③ 基準をつくる</button>
     <button class="tab" data-tab="records" role="tab">記録</button>
     <button class="tab" data-tab="settings" role="tab">設定</button>
   </nav>
@@ -93,7 +97,7 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <h2>モード</h2>
-          <button class="btn btn-sm" id="new-mode">＋ 作る</button>
+          <button class="btn btn-sm" id="new-mode" data-requires="merge">＋ 作る</button>
         </div>
         <ul class="list" id="mode-list"></ul>
         <div class="sidebar-foot">
@@ -215,18 +219,43 @@
   <!-- 設定 -->
   <section class="panel" id="panel-settings">
     <div class="content narrow">
-      <h2>接続設定</h2>
-      <p class="hint">この2つを入れるまで、どの機能も動きません。値は管理者から受け取ってください。入力すると、この端末に記憶されます。</p>
+      <h2>ログイン</h2>
+      <p class="hint">会社コードとパスワードは管理者から、個人コードは自分のものを使ってください。<strong>実施記録は個人コードで記録されます。</strong>他の人のコードで練習しないでください。</p>
       <label class="label">Worker URL
         <input class="input" id="worker-url" placeholder="https://clarion-proxy.xxxx.workers.dev">
       </label>
-      <label class="label">アクセストークン
-        <input class="input" id="access-token" type="password" placeholder="clientA: より後ろの部分だけ">
+      <div class="fb-grid">
+        <label class="label">会社コード
+          <input class="input" id="login-company" autocomplete="organization" placeholder="例：clarisse">
+        </label>
+        <label class="label">個人コード
+          <input class="input" id="login-staff" autocomplete="username" placeholder="例：1001">
+        </label>
+      </div>
+      <label class="label">パスワード
+        <input class="input" id="login-password" type="password" autocomplete="current-password" placeholder="会社共通のパスワード">
       </label>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="login-btn">ログイン</button>
+        <span class="status" id="login-status"></span>
+      </div>
+
+      <details class="block">
+        <summary>共有トークンで入る（従来の方法）</summary>
+        <p class="hint">ログインを整備する前から使っている入口です。会社コードを配る運用に移ったら、こちらは使わないでください。</p>
+        <label class="label">アクセストークン
+          <input class="input" id="access-token" type="password" placeholder="clientA: より後ろの部分だけ">
+        </label>
+        <div class="row row-actions">
+          <button class="btn" id="test-connection">接続テスト</button>
+        </div>
+      </details>
+
       <label class="label">固有名詞ヒント（書き起こし精度の向上・任意）
         <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
       </label>
       <hr>
+      <section data-requires="masters" hidden>
       <h2>ブランド・用語マスタ</h2>
       <p class="hint">
         全員で共有されます。書き起こしの精度向上と、表記揺れの統一に使われます。<br>
@@ -246,8 +275,95 @@
         <button class="btn btn-primary" id="save-glossary">マスタを保存</button>
         <span class="status" id="glossary-status"></span>
       </div>
+      </section>
+
 
       <hr>
+      <section data-requires="masters" hidden>
+      <h2>商品マスタ</h2>
+      <p class="hint">
+        ロープレでお客様が持ち込む品物です。<strong>ここに登録した中から1点が毎回ランダムに選ばれ、状態と正解の買取額がその場で決まります。</strong>
+        受講者には採点が終わるまで品物も正解額も見えません。<br>
+        1行1件、<code>カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考</code> の順。Excelからそのまま貼り付けられます。
+      </p>
+      <p class="hint">
+        <strong>買取率</strong>は「美品の状態で、新品価格の何％で買い取るか」です。ロレックスや終売の酒は100を超え、量販の家電やファッションジュエリーは10〜20になります。
+        ここが実際の相場とずれると正解額もずれるので、<strong>現場の感覚に合わせて直してください。</strong>
+      </p>
+      <textarea class="input textarea-lg" id="products" placeholder="腕時計&#9;ロレックス&#9;126610LN&#9;サブマリーナ デイト&#9;1450000&#9;105&#9;研磨歴を見る"></textarea>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="save-products">商品マスタを保存</button>
+        <button class="btn" id="seed-products">サンプル100点を読み込む</button>
+        <span class="status" id="products-status"></span>
+      </div>
+      <p class="hint">「保存」は<strong>入れ替え</strong>です。いま入っている内容が消えて、この欄の内容になります。</p>
+      </section>
+
+      <hr>
+      <section data-requires="masters" hidden>
+      <h2>スタッフ（個人コード）</h2>
+      <p class="hint">
+        個人コードで、見える範囲と触れる範囲が決まります。<br>
+        <strong>受講者</strong>…ロープレと自分の記録だけ／<strong>指導者</strong>…①接客を集める・会社全員の記録／<strong>管理者</strong>…③統合とマスタ編集、スタッフ管理
+      </p>
+      <label class="label" id="staff-company-wrap" hidden>対象の会社
+        <select class="input" id="staff-company"></select>
+      </label>
+      <div class="table-wrap">
+        <table class="records" id="staff-table"></table>
+      </div>
+      <div class="fb-grid">
+        <label class="label">個人コード
+          <input class="input" id="staff-code" placeholder="例：1001">
+        </label>
+        <label class="label">氏名
+          <input class="input" id="staff-name" placeholder="例：田中">
+        </label>
+        <label class="label">店舗
+          <input class="input" id="staff-store" placeholder="例：千葉店">
+        </label>
+        <label class="label">権限
+          <select class="input" id="staff-role"></select>
+        </label>
+      </div>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="add-staff">スタッフを追加</button>
+        <span class="status" id="staff-status"></span>
+      </div>
+      </section>
+
+      <hr>
+      <section data-requires="masters" hidden>
+      <h2>会社</h2>
+      <p class="hint">
+        <strong>実施記録は会社ごとに必ず分かれます。</strong>教材（案件・判断基準・モード・商品・用語）は「ナレッジ空間」が同じ会社どうしで共有されます。
+        2社で同じ教材を使い、記録は混ぜない、という運用がこれになります。
+      </p>
+      <div class="table-wrap">
+        <table class="records" id="company-table"></table>
+      </div>
+      <div class="fb-grid">
+        <label class="label">会社コード
+          <input class="input" id="company-code" placeholder="例：clarisse">
+        </label>
+        <label class="label">会社名
+          <input class="input" id="company-name" placeholder="例：◯◯株式会社">
+        </label>
+        <label class="label">パスワード（8文字以上）
+          <input class="input" id="company-password" type="password" placeholder="会社共通のパスワード">
+        </label>
+        <label class="label">ナレッジ空間
+          <input class="input" id="company-space" placeholder="空ならいまと同じ空間">
+        </label>
+      </div>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="save-company">会社を登録・パスワード変更</button>
+        <span class="status" id="company-status"></span>
+      </div>
+      <p class="hint">既にある会社コードを入れると、名前とパスワードの変更になります。パスワードを変えると、その会社の全員がログインし直しになります。</p>
+      </section>
+      <hr>
+      <section data-requires="capture" hidden>
       <h2>取り込みの調整</h2>
       <p class="hint">音声ファイルを読み込むときの処理です。既定のままで大半は動きます。素材に合わない場合だけ触ってください。</p>
       <div class="fb-grid">
@@ -265,9 +381,9 @@
         <input type="checkbox" id="trim-enabled" checked>
         <span>無音を詰める（切ると、元の長さのまま送ります）</span>
       </label>
+      </section>
 
       <div class="row row-actions">
-        <button class="btn btn-primary" id="test-connection">接続テスト</button>
         <span class="status" id="settings-status"></span>
       </div>
       <hr>
@@ -294,6 +410,13 @@
     <label class="label">客の声
       <select class="input" id="mode-voice"></select>
     </label>
+    <label class="label">持ち込む品物のカテゴリ
+      <select class="input" id="mode-category"></select>
+    </label>
+    <label class="label">品物を固定する（任意）
+      <select class="input" id="mode-product"></select>
+    </label>
+    <p class="hint">固定しなければ、選んだカテゴリの中から実施ごとにランダムで選ばれます。<strong>どちらの場合も、受講者には採点まで品物が見えません。</strong>モード名に品物名を入れると意味が無くなるので注意してください。</p>
     <div class="row row-end">
       <button class="btn btn-ghost" value="cancel">キャンセル</button>
       <button class="btn btn-primary" value="ok">作る</button>

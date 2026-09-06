@@ -109,3 +109,78 @@ CREATE TABLE IF NOT EXISTS glossary (
 -- 方言（後から追加）。標準語に直されると本人の言葉が失われるため、
 -- 書き起こし・整形・ロープレの3箇所でこの指定を使う。
 ALTER TABLE glossary ADD COLUMN dialect TEXT NOT NULL DEFAULT '';
+
+-- 商品マスタ（後から追加）。ロープレで扱う品物を、AIの想像ではなく実在の型番から出す。
+-- 相場は「新品時の実勢価格」と「美品での買取率」の2つだけ持ち、
+-- その場の状態（ランク・付属品）に応じた正解額は Worker 側で計算する。
+-- 採点のたびに正解が揺れないよう、この計算はAIに任せない。
+CREATE TABLE IF NOT EXISTS products (
+  id         TEXT PRIMARY KEY,
+  client     TEXT NOT NULL,               -- ナレッジ空間。case/criteria と同じ軸
+  category   TEXT NOT NULL DEFAULT '',    -- 腕時計・バッグ・ジュエリー など
+  brand      TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL DEFAULT '',    -- 型番
+  name       TEXT NOT NULL,
+  new_price  INTEGER NOT NULL DEFAULT 0,  -- 新品時の実勢価格（円）
+  retention  INTEGER NOT NULL DEFAULT 30, -- 美品(A)での買取率（%）。商材ごとに大きく違う
+  notes      TEXT NOT NULL DEFAULT '',    -- 真贋・状態の見どころ。客役の口から出る材料になる
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_products_client ON products (client, category, brand);
+
+-- モードに品物の指定を持たせる。
+-- product_id を入れると毎回その品物。空なら category の中から実施ごとに引く。
+ALTER TABLE modes ADD COLUMN product_id TEXT REFERENCES products (id) ON DELETE SET NULL;
+ALTER TABLE modes ADD COLUMN product_category TEXT NOT NULL DEFAULT '';
+
+-- 実施ごとに引いた品物と、その場の状態・正解額を固定して持つ。
+-- 受講者には採点が終わるまで返さない（index.js の hideProduct）。
+ALTER TABLE runs ADD COLUMN item TEXT;
+
+-- 権限（後から追加）。会社コード＋共通パスワード＋個人コードで入る。
+--
+-- ナレッジ（案件・判断基準・モード・商品・用語）は knowledge_space で共有できるが、
+-- 実施記録（runs）は会社コードで必ず分かれる。2社で同じ教材を使いつつ、
+-- 互いのログは見えないようにするための分け方。
+CREATE TABLE IF NOT EXISTS companies (
+  code            TEXT PRIMARY KEY,           -- 会社コード（ログインで入力する）
+  name            TEXT NOT NULL,
+  pass_hash       TEXT NOT NULL,              -- PBKDF2-SHA256
+  pass_salt       TEXT NOT NULL,
+  knowledge_space TEXT NOT NULL,              -- ナレッジを読む先。同じ値の会社は教材を共有する
+  active          INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+-- 個人コード。表示と編集の範囲はここの role で決まる。
+--   admin   … 全部（統合・マスタ編集・スタッフ管理・自社の全記録）
+--   trainer … 蓄積とインタビュー、自社の全記録。統合とマスタ編集は不可
+--   trainee … ロープレと自分の記録だけ
+CREATE TABLE IF NOT EXISTS staff (
+  id         TEXT PRIMARY KEY,
+  company    TEXT NOT NULL REFERENCES companies (code) ON DELETE CASCADE,
+  code       TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'trainee',
+  store      TEXT NOT NULL DEFAULT '',
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_code ON staff (company, code);
+
+-- ログインセッション。token はハッシュで持つ（漏れても再利用できないように）
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  company    TEXT NOT NULL,
+  staff_id   TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions (expires_at);
+
+-- 誰がやった記録かを持つ。trainee は自分の分しか見られない
+ALTER TABLE runs ADD COLUMN staff_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN store TEXT NOT NULL DEFAULT '';

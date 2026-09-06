@@ -51,6 +51,23 @@ async function upload(path, { audio, payload, filename }) {
 
 export const api = {
   config: () => request('GET', '/api/config'),
+
+  // ログイン（会社コード＋パスワード＋個人コード）
+  login: (data) => request('POST', '/api/login', data),
+  logout: () => request('POST', '/api/logout', {}),
+  me: () => request('GET', '/api/me'),
+
+  // マスタと権限の管理（管理者のみ）
+  listProducts: () => request('GET', '/api/products'),
+  saveProducts: (text) => request('POST', '/api/products', { text }),
+  seedProducts: () => request('POST', '/api/products/seed', {}),
+  listStaff: (company) => request('GET', `/api/staff${company ? `?company=${encodeURIComponent(company)}` : ''}`),
+  createStaff: (data) => request('POST', '/api/staff', data),
+  updateStaff: (id, data) => request('PATCH', `/api/staff/${id}`, data),
+  deleteStaff: (id, company) => request('DELETE', `/api/staff/${id}${company ? `?company=${encodeURIComponent(company)}` : ''}`),
+  listCompanies: () => request('GET', '/api/companies'),
+  saveCompany: (data) => request('POST', '/api/companies', data),
+
   getGlossary: () => request('GET', '/api/glossary'),
   saveGlossary: (text, dialect) => request('POST', '/api/glossary', { text, dialect }),
 

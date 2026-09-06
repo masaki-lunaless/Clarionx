@@ -9,6 +9,12 @@
 
 import { ApiError, EFFORT, MODELS, generateStructured, generateText } from './llm.js';
 import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
+import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItem, pricePenalty } from './items.js';
+import { SEED_PRODUCTS } from './seed-products.js';
+import {
+  ROLE_LIST, hashPassword, hasRole, newSessionToken, normalizeCode,
+  requireRole, sessionDays, sha256, timingSafeEqual,
+} from './auth.js';
 import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
@@ -32,29 +38,49 @@ const MAX_TRANSCRIPT_CHARS = 60000;
 export const SCORING = {
   unclosedPenalty: 30, // 不成約なら引く点（成約していれば0）
   maxAxisPenalty: 70,  // 型の不一致で引ける上限。軸数で按分する
+  // 品物が設定されている回だけ、上の70を「型50 + 査定額20」に分ける。
+  // 品物のない回（従来の記録）は70のまま。過去の点数の意味を変えないため。
+  axisPenaltyWithItem: 70 - PRICE_PENALTY.max,
 };
 
 /**
  * 減点法で総合点を出す。
- * AIには軸ごとの減点幅（0〜10）と成約の二値判定だけを任せ、合計はここで決める。
- * 採点のたびに配点が揺れないようにするため。
+ * AIには軸ごとの減点幅（0〜10）・成約の二値判定・提示額の抜き出しだけを任せ、
+ * 合計はここで決める。採点のたびに配点が揺れないようにするため。
  */
-export function computeTotal(score) {
+export function computeTotal(score, item = null) {
   const axes = score.per_axis || [];
   const cap = axes.length * 10;
   const raw = axes.reduce((sum, a) => sum + Math.min(10, Math.max(0, Number(a.deduction) || 0)), 0);
-  const axisPenalty = cap ? Math.round((raw / cap) * SCORING.maxAxisPenalty) : 0;
+  const maxAxis = item ? SCORING.axisPenaltyWithItem : SCORING.maxAxisPenalty;
+  const axisPenalty = cap ? Math.round((raw / cap) * maxAxis) : 0;
   const closePenalty = score.closed ? 0 : SCORING.unclosedPenalty;
+  const price = item ? pricePenalty(item, score.offered_price) : null;
+  const pricePen = price?.penalty || 0;
   return {
     ...score,
-    total: Math.max(0, 100 - closePenalty - axisPenalty),
+    total: Math.max(0, 100 - closePenalty - axisPenalty - pricePen),
+    price: price ? { ...price, offered: score.offered_price ?? null, quote: score.offered_price_quote || '' } : null,
     breakdown: {
       closed: Boolean(score.closed),
       closePenalty,
       axisPenalty,
-      maxAxisPenalty: SCORING.maxAxisPenalty,
+      maxAxisPenalty: maxAxis,
+      pricePenalty: pricePen,
+      maxPricePenalty: item ? PRICE_PENALTY.max : 0,
     },
   };
+}
+
+/**
+ * 品物を受講者に見せてよいかを決める。
+ * 練習中に正解額が見えたら訓練にならないので、採点が終わるまでは伏せる。
+ * 伏せていること自体は返す（画面に「採点後に開示」と出せるように）。
+ */
+export function visibleItem(run) {
+  if (!run?.item) return null;
+  if (!run.score) return { hidden: true };
+  return run.item;
 }
 
 /* -------------------------------- 共通処理 -------------------------------- */
@@ -82,53 +108,92 @@ function json(data, request, env, status = 200) {
   });
 }
 
-function timingSafeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
 /**
- * クライアント別トークン認証。
- * ACCESS_TOKENS 未設定なら誰でも通す（ローカル開発用）。
- * 設定形式: "clientA:xxxxx,clientB:yyyyy" もしくはトークンのカンマ区切り。
+ * 認証。入口は2つある。
+ *
+ * 1. ログイン（会社コード＋共通パスワード＋個人コード）で得たセッショントークン
+ * 2. 環境変数 ACCESS_TOKENS の共有トークン（移行前からの入口。管理者として通す）
+ *
+ * どちらも `x-clarion-token` で送る。返す auth は次の意味を持つ：
+ *   client  … ナレッジ空間。案件・判断基準・モード・商品・用語はこの軸
+ *   company … 会社コード。実施記録はこの軸で必ず分かれる
+ *   staff   … 個人。受講者は自分の記録しか見られない
  */
-function authenticate(request, env) {
-  const raw = (env.ACCESS_TOKENS || '').trim();
+async function authenticate(request, env) {
   const supplied = request.headers.get('x-clarion-token') || '';
-  if (!raw) return { client: 'dev', admin: true };
-  if (!supplied) throw new ApiError(401, 'アクセストークンが必要です');
 
-  for (const entry of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+  // 1. ログインセッション
+  if (supplied.length === 64 && /^[0-9a-f]+$/.test(supplied)) {
+    const row = await db.findSession(env, await sha256(supplied));
+    if (row) {
+      if (!row.staff_active || !row.company_active) throw new ApiError(401, 'このアカウントは停止されています');
+      return {
+        client: row.knowledge_space,
+        company: row.company,
+        companyName: row.company_name,
+        staffId: row.staff_id,
+        staffCode: row.staff_code,
+        staffName: row.staff_name,
+        store: row.store || '',
+        role: row.role,
+        admin: row.role === 'admin',
+        via: 'login',
+      };
+    }
+    // 64桁の16進が来てセッションに無い＝期限切れ。共有トークンとしては照合しない
+    throw new ApiError(401, 'ログインの有効期限が切れています。もう一度ログインしてください');
+  }
+
+  // 2. 共有トークン（移行前からの入口）
+  const raw = (env.ACCESS_TOKENS || '').trim();
+  if (!raw) return legacyAuth('dev');
+  if (!supplied) throw new ApiError(401, 'ログインが必要です');
+
+  for (const entry of raw.split(',').map((t) => t.trim()).filter(Boolean)) {
     const idx = entry.indexOf(':');
     const name = idx === -1 ? 'client' : entry.slice(0, idx);
     const token = idx === -1 ? entry : entry.slice(idx + 1);
-    if (token && timingSafeEqual(token, supplied)) return { client: name, admin: isAdmin(env, supplied) };
+    if (token && timingSafeEqual(token, supplied)) return legacyAuth(name, isLegacyAdmin(env, supplied));
   }
   throw new ApiError(401, 'アクセストークンが違います');
 }
 
 /**
- * 統合（ステップ3）を管理者に限定するための判定。
- * ADMIN_TOKENS 未設定のあいだは全員が管理者＝フルオープン。
- * 絞りたくなったら、この環境変数に管理者トークンを入れるだけでよい。
+ * 共有トークンで入った場合。
+ * ナレッジ空間と会社コードを同じラベルにするので、これまでのデータの見え方は変わらない。
  */
-function isAdmin(env, supplied) {
+const legacyAuth = (label, admin = true) => ({
+  client: label,
+  company: label,
+  companyName: label,
+  staffId: '',
+  staffCode: '',
+  staffName: '',
+  store: '',
+  role: admin ? 'admin' : 'trainee',
+  admin,
+  via: 'token',
+});
+
+function requireAdmin(auth) {
+  requireRole(auth, 'admin');
+}
+
+/**
+ * 共有トークンのうち管理者にするもの。
+ * ADMIN_TOKENS 未設定のあいだは全員が管理者＝フルオープン。
+ */
+function isLegacyAdmin(env, supplied) {
   const raw = (env.ADMIN_TOKENS || '').trim();
   if (!raw) return true;
   return raw
     .split(',')
-    .map((s) => s.trim())
+    .map((t) => t.trim())
     .filter(Boolean)
     .some((token) => timingSafeEqual(token, supplied));
 }
 
-function requireAdmin(auth) {
-  if (!auth.admin) throw new ApiError(403, 'この操作は管理者のみです');
-}
-
-// 管理者を絞ると、統合（ステップ3）と削除が管理者だけになる。
+// 管理者を絞ると、統合（ステップ3）と削除とマスタ編集が管理者だけになる。
 // ADMIN_TOKENS に入れるトークンは、ACCESS_TOKENS にも「同じラベル」で登録すること。
 // ラベルが違うとデータの持ち主が別扱いになり、管理者から他の人のデータが見えなくなる。
 //   例) ACCESS_TOKENS = "clarion:みんなの共有トークン,clarion:管理者トークン"
@@ -194,6 +259,79 @@ function criteriaToMarkdown(doc) {
   return lines.join('\n');
 }
 
+
+/**
+ * 商品マスタの貼り付けテキストを解釈する。
+ * 1行 = カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考
+ * Excelからの貼り付け（タブ区切り）とCSVの両方を受ける。
+ */
+export function parseProducts(text) {
+  const rows = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    // 区切りは行ごとに決める。Excelの貼り付けはタブで、金額に「1,450,000」とカンマが入るため、
+    // タブがある行をカンマでも切ると金額が壊れる
+    const cols = (line.includes('\t') ? line.split('\t') : line.split(',')).map((c) => c.trim());
+    // 見出し行を読み飛ばす
+    if (/^(カテゴリ|category)$/i.test(cols[0])) continue;
+    const [category = '', brand = '', model = '', name = '', price = '', retention = '', notes = ''] = cols;
+    if (!name) continue;
+    const newPrice = Math.round(Number(String(price).replace(/[,円\s]/g, ''))) || 0;
+    const rate = Math.round(Number(String(retention).replace(/[%\s]/g, ''))) || 30;
+    if (newPrice <= 0) continue;
+    rows.push({ category, brand, model, name, newPrice, retention: Math.min(500, Math.max(1, rate)), notes });
+  }
+  return rows;
+}
+
+/**
+ * 実施記録を1件取る。
+ * 会社が違えば見えない。受講者は自分の回しか触れない
+ * （他人のロープレを続けたり、採点し直したりできないようにする）。
+ */
+async function findRun(env, auth, id) {
+  const runs = await db.listRuns(env, auth.company, {
+    staffId: hasRole(auth, 'trainer') ? undefined : auth.staffId || undefined,
+  });
+  const run = runs.find((r) => r.id === id);
+  if (!run) throw new ApiError(404, '実施記録が見つかりません');
+  return run;
+}
+
+/**
+ * どの会社のスタッフを操作するか決める。
+ *
+ * 共有トークンで入った管理者（移行前からの入口）は、どの会社でも触れる。
+ * 会社を作ってスタッフを配るのはこの立場の人なので、ここを塞ぐと初期設定ができない。
+ * ログインで入った管理者は、自分の会社だけ。
+ */
+function targetCompany(auth, requested) {
+  const want = String(requested || '').trim().toLowerCase();
+  if (!want || want === auth.company) return auth.company;
+  if (auth.via === 'token' && auth.admin) return want;
+  throw new ApiError(403, '他の会社のスタッフは操作できません');
+}
+
+/** ログイン中の人の公開形。画面のタブ出し分けはこれを見て決める */
+const meSummary = (auth) => ({
+  company: auth.company,
+  company_name: auth.companyName,
+  knowledge_space: auth.client,
+  staff_code: auth.staffCode,
+  staff_name: auth.staffName,
+  store: auth.store,
+  role: auth.role,
+  admin: auth.admin,
+  via: auth.via,
+  can: {
+    capture: hasRole(auth, 'trainer'),   // ①蓄積
+    merge: hasRole(auth, 'admin'),       // ③統合
+    masters: hasRole(auth, 'admin'),     // 商品・用語マスタ
+    allRecords: hasRole(auth, 'trainer'), // 他人の記録
+  },
+});
+
 /* --------------------------------- ルート -------------------------------- */
 
 const routes = [
@@ -211,10 +349,158 @@ const routes = [
       client: auth.client,
       admin: auth.admin,
       feedbackOptions: FEEDBACK_OPTIONS,
+      conditions: CONDITIONS.map(({ id, label, desc }) => ({ id, label, desc })),
+      accessories: ACCESSORIES.map(({ id, label }) => ({ id, label })),
+      productCount: await db.countProducts(env, auth.client),
+      me: meSummary(auth),
+      roles: ROLE_LIST,
     }),
   ],
 
+  /* --------------------------------- 認証 -------------------------------- */
+
+  // 会社コード＋共通パスワード＋個人コード。3つ揃って初めて通す。
+  // どれが違ったかは返さない（総当たりの手がかりを渡さないため）
+  [
+    'POST',
+    '/api/login',
+    async ({ env, body }) => {
+      const companyCode = normalizeCode(body.company, '会社コード');
+      const staffCode = normalizeCode(body.staffCode, '個人コード');
+      const password = String(body.password || '');
+      const deny = () => new ApiError(401, '会社コード・パスワード・個人コードのいずれかが違います');
+
+      const company = await db.getCompany(env, companyCode);
+      if (!company) throw deny();
+      const { hash } = await hashPassword(password, company.pass_salt);
+      if (!timingSafeEqual(hash, company.pass_hash)) throw deny();
+      const staff = await db.getStaffByCode(env, companyCode, staffCode);
+      if (!staff) throw deny();
+
+      const token = newSessionToken();
+      const expiresAt = new Date(Date.now() + sessionDays(env) * 86400000).toISOString();
+      await db.createSession(env, {
+        tokenHash: await sha256(token),
+        company: companyCode,
+        staffId: staff.id,
+        expiresAt,
+      });
+      return {
+        token,
+        expiresAt,
+        company: { code: company.code, name: company.name },
+        staff: { code: staff.code, name: staff.name, role: staff.role, store: staff.store },
+      };
+    },
+  ],
+
+  [
+    'POST',
+    '/api/logout',
+    async ({ env, request }) => {
+      const supplied = request.headers.get('x-clarion-token') || '';
+      if (supplied.length === 64) await db.deleteSession(env, await sha256(supplied));
+      return { ok: true };
+    },
+  ],
+
+  ['GET', '/api/me', async ({ auth }) => ({ me: meSummary(auth) })],
+
+  /* ------------------------------ 会社の管理 ------------------------------ */
+
+  ['GET', '/api/companies', async ({ env, auth }) => {
+    requireAdmin(auth);
+    return { companies: await db.listCompanies(env) };
+  }],
+
+  // 会社の作成とパスワード変更。knowledgeSpace を同じ値にした会社どうしは教材を共有する
+  [
+    'POST',
+    '/api/companies',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth);
+      const code = normalizeCode(body.code, '会社コード');
+      const name = requireString(body.name, 'name', 100);
+      const password = String(body.password || '');
+      if (password.length < 8) throw new ApiError(400, 'パスワードは8文字以上にしてください');
+      const { hash, salt } = await hashPassword(password);
+      await db.upsertCompany(env, {
+        code,
+        name,
+        hash,
+        salt,
+        knowledgeSpace: String(body.knowledgeSpace || '').trim() || auth.client,
+      });
+      return { ok: true, code };
+    },
+  ],
+
+  [
+    'DELETE',
+    '/api/companies/:code',
+    async ({ env, auth, params }) => {
+      requireAdmin(auth);
+      if (params.code === auth.company) throw new ApiError(400, 'ログイン中の会社は削除できません');
+      await db.deleteCompany(env, params.code);
+      return { ok: true };
+    },
+  ],
+
+  /* ---------------------------- スタッフの管理 ---------------------------- */
+
+  ['GET', '/api/staff', async ({ env, auth, url }) => {
+    requireAdmin(auth);
+    const company = targetCompany(auth, url.searchParams.get('company'));
+    return { staff: await db.listStaff(env, company), roles: ROLE_LIST, company };
+  }],
+
+  [
+    'POST',
+    '/api/staff',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth);
+      const code = normalizeCode(body.code, '個人コード');
+      const name = requireString(body.name, 'name', 100);
+      const role = ROLE_LIST.some((r) => r.id === body.role) ? body.role : 'trainee';
+      const company = targetCompany(auth, body.company);
+      if (!(await db.getCompany(env, company))) throw new ApiError(404, `会社「${company}」がありません。先に会社を登録してください`);
+      return { staff: await db.createStaff(env, company, { code, name, role, store: body.store }) };
+    },
+  ],
+
+  [
+    'PATCH',
+    '/api/staff/:id',
+    async ({ env, auth, params, body }) => {
+      requireAdmin(auth);
+      const fields = {};
+      if (body.name !== undefined) fields.name = String(body.name).slice(0, 100);
+      if (body.store !== undefined) fields.store = String(body.store).slice(0, 100);
+      if (body.active !== undefined) fields.active = Boolean(body.active);
+      if (body.role !== undefined) {
+        if (!ROLE_LIST.some((r) => r.id === body.role)) throw new ApiError(400, '権限の指定が不正です');
+        fields.role = body.role;
+      }
+      await db.updateStaff(env, targetCompany(auth, body.company), params.id, fields);
+      return { ok: true };
+    },
+  ],
+
+  [
+    'DELETE',
+    '/api/staff/:id',
+    async ({ env, auth, params, url }) => {
+      requireAdmin(auth);
+      if (params.id === auth.staffId) throw new ApiError(400, 'ログイン中の自分は削除できません');
+      await db.deleteStaff(env, targetCompany(auth, url.searchParams.get('company')), params.id);
+      return { ok: true };
+    },
+  ],
+
   /* ------------------------------ 1. 蓄積 ------------------------------- */
+  // このブロック（/api/cases と /api/questions）は指導者以上に限定している。
+  // 判定はルーター側（GATED）で一括してかけているので、各ルートには書いていない。
+  // 実際の接客の書き起こしが入るため、受講者には開かない。
 
   ['GET', '/api/cases', async ({ env, auth }) => ({ cases: await db.listCases(env, auth.client) })],
 
@@ -395,15 +681,19 @@ const routes = [
 
   /* ------------------------------ 3. 統合 ------------------------------- */
 
-  ['GET', '/api/criteria', async ({ env, auth }) => ({ criteria: await db.listCriteria(env, auth.client) })],
+  ['GET', '/api/criteria', async ({ env, auth }) => ({ criteria: await db.listCriteria(env, auth.client, auth.company) })],
 
-  ['GET', '/api/criteria/:id', async ({ env, auth, params }) => ({ criteria: await db.getCriteria(env, auth.client, params.id) })],
+  // 判断基準の本文はエースのやり方そのもの。指導者以上に限る
+  ['GET', '/api/criteria/:id', async ({ env, auth, params }) => {
+    requireRole(auth, 'trainer');
+    return { criteria: await db.getCriteria(env, auth.client, params.id) };
+  }],
 
   // 統合の材料になるフィードバック（次の統合に食わせる）
   [
     'GET',
     '/api/criteria/:id/feedback',
-    async ({ env, auth, params }) => ({ feedback: await db.feedbackForCriteria(env, auth.client, [params.id]) }),
+    async ({ env, auth, params }) => ({ feedback: await db.feedbackForCriteria(env, auth.company, [params.id]) }),
   ],
 
   [
@@ -419,7 +709,7 @@ const routes = [
 
       // 前回までのロープレで「的外れ」と評価された点や自由記述を、統合の補足として渡す
       const fbIds = Array.isArray(body.feedbackCriteriaIds) ? body.feedbackCriteriaIds.filter(Boolean) : [];
-      const feedback = fbIds.length ? await db.feedbackForCriteria(env, auth.client, fbIds) : [];
+      const feedback = fbIds.length ? await db.feedbackForCriteria(env, auth.company, fbIds) : [];
       const notes = [body.notes, formatFeedbackNotes(feedback)].filter(Boolean).join('\n\n');
 
       const req = criteriaRequest({
@@ -461,26 +751,76 @@ const routes = [
     },
   ],
 
+
+  /* ------------------------------ 商品マスタ ----------------------------- */
+
+  [
+    'GET',
+    '/api/products',
+    async ({ env, auth }) => {
+      // 相場表そのもの。受講者に見せると、会話から品物が分かった時点で正解を逆算できてしまう
+      requireRole(auth, 'trainer');
+      const products = await db.listProducts(env, auth.client);
+      return { products, categories: [...new Set(products.map((p) => p.category).filter(Boolean))] };
+    },
+  ],
+
+  // 貼り付けたテキストで総入れ替えする。Excelから1列ずつ持ってくる使い方を想定
+  [
+    'POST',
+    '/api/products',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth);
+      const rows = parseProducts(body.text || '');
+      if (!rows.length) throw new ApiError(400, '登録できる行がありません。書式を確認してください');
+      const count = await db.replaceProducts(env, auth.client, rows);
+      return { count };
+    },
+  ],
+
+  // 初期データ。空のマスタに最初の100点を入れる
+  [
+    'POST',
+    '/api/products/seed',
+    async ({ env, auth }) => {
+      requireAdmin(auth);
+      const rows = SEED_PRODUCTS.map(([category, brand, model, name, newPrice, retention, notes]) => ({
+        category, brand, model, name, newPrice, retention, notes,
+      }));
+      const count = await db.replaceProducts(env, auth.client, rows);
+      return { count };
+    },
+  ],
+
   /* ----------------------------- 2. ロープレ ---------------------------- */
 
-  ['GET', '/api/modes', async ({ env, auth }) => ({ modes: await db.listModes(env, auth.client) })],
+  ['GET', '/api/modes', async ({ env, auth }) => ({
+    modes: (await db.listModes(env, auth.client)).map((m) => modeSummary(m, { admin: auth.admin })),
+  })],
 
   [
     'POST',
     '/api/modes',
     async ({ env, auth, body }) => {
+      // モードは教材。作れるのは管理者だけ（③の統合と同じ扱い）
+      requireAdmin(auth);
       const name = requireString(body.name, 'name', 200);
       const criteriaId = requireString(body.criteriaId, 'criteriaId', 100);
       await db.getCriteria(env, auth.client, criteriaId); // 存在確認
       const customerType = requireString(body.customerType, 'customerType', 100);
+      // 品物を固定するなら実在確認をしておく。存在しないIDのまま作ると開始時に落ちる
+      const productId = String(body.productId || '').trim();
+      if (productId) await db.getProduct(env, auth.client, productId);
       const mode = await db.createMode(env, auth.client, {
         name,
         criteriaId,
         customerType,
         scenario: body.scenario,
         voice: body.voice,
+        productId,
+        productCategory: String(body.productCategory || '').trim(),
       });
-      return { mode: modeSummary(mode) };
+      return { mode: modeSummary(mode, { admin: auth.admin }) };
     },
   ],
 
@@ -494,8 +834,15 @@ const routes = [
     },
   ],
 
+  // 記録。会社をまたいでは見えない。受講者はさらに自分の分だけになる
   ['GET', '/api/runs', async ({ env, auth, url }) => ({
-    runs: await db.listRuns(env, auth.client, { criteriaId: url.searchParams.get('criteriaId') || undefined }),
+    runs: (
+      await db.listRuns(env, auth.company, {
+        criteriaId: url.searchParams.get('criteriaId') || undefined,
+        staffId: hasRole(auth, 'trainer') ? undefined : auth.staffId || undefined,
+      })
+    ).map((r) => ({ ...r, item: visibleItem(r) })),
+    scope: hasRole(auth, 'trainer') ? 'company' : 'self',
   })],
 
   // 開始：客に第一声を言わせるところまで
@@ -504,16 +851,34 @@ const routes = [
     '/api/runs',
     async ({ env, auth, body }) => {
       const mode = await db.getMode(env, auth.client, requireString(body.modeId, 'modeId', 100));
-      const runId = await db.createRun(env, auth.client, {
+
+      // 品物はここで1点引き、状態と正解額まで固めて run に保存する。
+      // 会話の途中で作ると毎ターン変わってしまうため、開始時に一度だけ決める。
+      // マスタが空のときは品物なしで動かす（従来どおりの練習になる）。
+      let item = null;
+      if (await db.countProducts(env, auth.client)) {
+        const product = await db.drawProduct(env, auth.client, {
+          productId: mode.product_id,
+          category: mode.product_category,
+        });
+        item = drawItem(product);
+      }
+
+      const runId = await db.createRun(env, auth.company, {
         modeId: mode.id,
         criteriaId: mode.criteria_id,
-        trainee: String(body.trainee || '').slice(0, 100),
+        // ログインしていれば実施者は個人コードから決まる。手入力に頼らない
+        trainee: (auth.staffName || String(body.trainee || '')).slice(0, 100),
+        staffId: auth.staffId,
+        store: auth.store,
+        item,
       });
       const { dialect } = await db.getGlossary(env, auth.client);
-      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect });
+      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect, item });
       const history = [{ role: 'customer', text: turn.replyText }];
-      await db.saveRun(env, auth.client, runId, { history });
-      return { runId, mode: modeSummary(mode), history, ...turn };
+      await db.saveRun(env, auth.company, runId, { history });
+      // item は返さない。受講者に正解額が見えたら訓練にならない
+      return { runId, mode: modeSummary(mode), history, hasItem: Boolean(item), ...turn };
     },
   ],
 
@@ -522,9 +887,7 @@ const routes = [
     'POST',
     '/api/runs/:id/turn',
     async ({ env, auth, params, body }) => {
-      const runs = await db.listRuns(env, auth.client, {});
-      const run = runs.find((r) => r.id === params.id);
-      if (!run) throw new ApiError(404, '実施記録が見つかりません');
+      const run = await findRun(env, auth, params.id);
       const mode = await db.getMode(env, auth.client, run.mode_id);
 
       let text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -533,9 +896,9 @@ const routes = [
 
       const history = [...run.history, { role: 'trainee', text }];
       const { dialect } = await db.getGlossary(env, auth.client);
-      const turn = await speakAsCustomer(env, mode, history, { dialect });
+      const turn = await speakAsCustomer(env, mode, history, { dialect, item: run.item });
       history.push({ role: 'customer', text: turn.replyText });
-      await db.saveRun(env, auth.client, params.id, { history });
+      await db.saveRun(env, auth.company, params.id, { history });
       return { transcript: text, history, ...turn };
     },
   ],
@@ -544,9 +907,7 @@ const routes = [
     'POST',
     '/api/runs/:id/score',
     async ({ env, auth, params }) => {
-      const runs = await db.listRuns(env, auth.client, {});
-      const run = runs.find((r) => r.id === params.id);
-      if (!run) throw new ApiError(404, '実施記録が見つかりません');
+      const run = await findRun(env, auth, params.id);
       if (!run.history.length) throw new ApiError(400, '会話がありません');
       const criteria = await db.getCriteria(env, auth.client, run.criteria_id);
       const mode = run.mode_id ? await db.getMode(env, auth.client, run.mode_id).catch(() => null) : null;
@@ -554,11 +915,13 @@ const routes = [
         history: run.history,
         criteria: criteria.markdown,
         customerType: mode?.customer_type,
+        item: run.item,
       });
       const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000, effort: EFFORT.scoring, label: 'score' });
-      const score = computeTotal(raw);
-      await db.saveRun(env, auth.client, params.id, { score });
-      return { score };
+      const score = computeTotal(raw, run.item);
+      await db.saveRun(env, auth.company, params.id, { score });
+      // 採点が済んだので、ここで初めて品物と正解額を返す
+      return { score, item: run.item };
     },
   ],
 
@@ -567,7 +930,8 @@ const routes = [
     'PATCH',
     '/api/runs/:id/feedback',
     async ({ env, auth, params, body }) => {
-      await db.saveFeedback(env, auth.client, params.id, {
+      await findRun(env, auth, params.id); // 他人の回に書けないようにする
+      await db.saveFeedback(env, auth.company, params.id, {
         realism: body.realism,
         scoring: body.scoring,
         note: body.note,
@@ -625,8 +989,13 @@ ${lines.join('\n')}`;
 
 const contextOf = (c) => [c.ace_name && `対象者：${c.ace_name}`, c.context].filter(Boolean).join('\n');
 
-/** モードの公開形。criteria_markdown は客役への指示なのでクライアントには返さない。 */
-const modeSummary = (m) => ({
+/**
+ * モードの公開形。
+ * criteria_markdown は客役への指示なので返さない。
+ * product_id と品物名も返さない。どの品物が出るか分かると、事前に相場を調べられてしまう。
+ * カテゴリだけは場面設定の一部なので返す。
+ */
+const modeSummary = (m, { admin = false } = {}) => ({
   id: m.id,
   name: m.name,
   criteria_id: m.criteria_id,
@@ -634,6 +1003,9 @@ const modeSummary = (m) => ({
   customer_type: m.customer_type,
   scenario: m.scenario,
   voice: m.voice,
+  product_category: m.product_category || '',
+  has_fixed_product: Boolean(m.product_id),
+  ...(admin ? { product_id: m.product_id || '', product_name: m.product_name || '' } : {}),
 });
 
 /**
@@ -665,7 +1037,7 @@ export function stripStageDirections(text) {
 }
 
 /** 客役の1発話を作り、読み上げ音声まで用意する */
-async function speakAsCustomer(env, mode, history, { opening, dialect }) {
+async function speakAsCustomer(env, mode, history, { opening, dialect, item }) {
   const messages = history.map((m) => ({
     role: m.role === 'trainee' ? 'user' : 'assistant',
     content: String(m.text || '').slice(0, 4000),
@@ -679,6 +1051,7 @@ async function speakAsCustomer(env, mode, history, { opening, dialect }) {
       scenario: mode.scenario,
       criteria: mode.criteria_markdown,
       dialect,
+      item,
     }),
     messages: messages.slice(-40),
     maxTokens: 400,
@@ -697,6 +1070,10 @@ async function speakAsCustomer(env, mode, history, { opening, dialect }) {
 }
 
 /* -------------------------------- ルーター ------------------------------- */
+
+/** 指導者以上でないと触れないパス。①蓄積の一式 */
+const GATED_TRAINER = /^\/api\/(cases|questions)(\/|$)/;
+
 
 function match(method, pathname) {
   const parts = pathname.replace(/\/$/, '').split('/').filter(Boolean);
@@ -731,7 +1108,13 @@ export default {
     if (!route) return json({ error: 'Not found', path: url.pathname }, request, env, 404);
 
     try {
-      const auth = url.pathname === '/api/health' ? { client: 'anon', admin: false } : authenticate(request, env);
+      const auth =
+        url.pathname === '/api/health' || url.pathname === '/api/login'
+          ? legacyAuth('anon', false)
+          : await authenticate(request, env);
+      // ①蓄積は指導者以上。実際の接客の中身なので受講者には開かない。
+      // 個々のルートに散らすと足し忘れるため、ここで一度だけ判定する
+      if (GATED_TRAINER.test(url.pathname)) requireRole(auth, 'trainer');
       const body = request.method === 'GET' || request.method === 'DELETE' ? {} : await readBody(request);
       const result = await route.handler({ env, auth, body, params: route.params, url, request });
       return json(result, request, env);

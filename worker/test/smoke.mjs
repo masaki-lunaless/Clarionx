@@ -1,6 +1,9 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
-import worker, { SCORING, computeTotal, stripPreamble, stripStageDirections } from '../src/index.js';
+import worker, { SCORING, computeTotal, parseProducts, stripPreamble, stripStageDirections, visibleItem } from '../src/index.js';
+import { drawItem, priceFor, pricePenalty, CONDITIONS, ACCESSORIES } from '../src/items.js';
+import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
+import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
 import { parseGlossary } from '../src/db.js';
 import { glossaryBlock } from '../src/prompts.js';
@@ -44,8 +47,19 @@ const rows = {
     history: '[{"role":"customer","text":"すみません"},{"role":"trainee","text":"いらっしゃいませ"}]',
     score: null,
     fb_note: '',
+    item: null,
+    staff_id: 'staff-admin',
+  },
+  product: {
+    id: 'prod1', client: 'clientA', category: '腕時計', brand: 'ロレックス',
+    model: '126610LN', name: 'サブマリーナ デイト', new_price: 1450000, retention: 105,
+    notes: '研磨歴を見る', active: 1,
   },
 };
+
+// ログイン系。パスワードのハッシュはテスト開始時に本物を計算して入れる
+const auth = { company: null, staff: null, session: null };
+let productCount = 1;
 
 let sqlLog = [];
 let missingRow = null; // '案件が見つかりません' 等を再現したいときにテーブル名を入れる
@@ -53,7 +67,7 @@ let missingRow = null; // '案件が見つかりません' 等を再現したい
 function stubDB() {
   const answer = (sql, kind) => {
     const flat = sql.replace(/\s+/g, ' ').trim();
-    sqlLog.push(flat.slice(0, 80));
+    sqlLog.push(flat.slice(0, 300));
     const has = (s) => flat.includes(s); // SQLは改行で折り返してあるので正規化してから照合する
     if (kind === 'first') {
       if (has('FROM cases WHERE id')) return missingRow === 'cases' ? null : rows.case;
@@ -61,7 +75,12 @@ function stubDB() {
       if (has('FROM modes m JOIN criteria')) return missingRow === 'modes' ? null : rows.mode;
       if (has('FROM questions WHERE id')) return { id: 'q1', case_id: 'case1', turning_point_id: 'tp1', seq: 0 };
       if (has('FROM glossary WHERE client')) return { text: 'ヴァンドーム青山 = バンドーム', dialect: '関西弁。ほんま、なんぼ、〜やねん、おおきに' };
-      if (has('COUNT(*) AS n')) return { n: 0 };
+      if (has('FROM products WHERE id')) return rows.product;
+      if (has('FROM companies WHERE code')) return auth.company;
+      if (has('FROM staff WHERE company = ? AND code')) return auth.staff;
+      if (has('FROM staff WHERE id')) return auth.staff;
+      if (has('FROM sessions se JOIN staff')) return auth.session;
+      if (has('COUNT(*) AS n')) return { n: productCount };
       return null;
     }
     if (kind === 'all') {
@@ -74,6 +93,9 @@ function stubDB() {
         return has('fb_note') ? [{ id: 'run1', mode_name: '迷い客モード', fb_realism: 'wrong', fb_scoring: 'off', fb_note: '客がやけに素直すぎる' }] : [rows.run];
       }
       if (has('FROM questions q')) return [{ question: 'なぜですか', answer: '客の手元を見ていたので', quote: '引用' }];
+      if (has('FROM products WHERE')) return productCount ? [rows.product] : [];
+      if (has('FROM staff s WHERE s.company')) return [{ ...auth.staff, run_count: 0 }];
+      if (has('FROM companies c ORDER BY')) return [{ code: 'clientA', name: 'A社', knowledge_space: 'shared' }];
       return [];
     }
     return { meta: { changes: 1 } };
@@ -320,6 +342,180 @@ check('ト書き: アスタリスクを落とす', stripStageDirections('*時計
 check('ト書き: 全角カッコを落とす', stripStageDirections('（うなずいて）そうなんですよ。') === 'そうなんですよ。');
 check('ト書き: 全部がト書きなら元文を返す', stripStageDirections('（沈黙）') === '（沈黙）');
 check('ト書き: 通常文は変えない', stripStageDirections('これ、いくらになりますか。') === 'これ、いくらになりますか。');
+
+/* ============================ 商品マスタ ============================== */
+
+check('商品: 初期データは100点以上', SEED_PRODUCTS.length >= 100, SEED_PRODUCTS.length);
+check('商品: 初期データの列がそろっている',
+  SEED_PRODUCTS.every((r) => r.length === 7 && r[3] && r[4] > 0 && r[5] > 0));
+
+// 貼り付けの解釈。Excelはタブ、手打ちはカンマで来る
+const parsed = parseProducts(
+  'カテゴリ\tブランド\t型番\t商品名\t新品価格\t買取率\t備考\n' +
+  '腕時計\tロレックス\t126610LN\tサブマリーナ\t1,450,000円\t105%\t風防を見る\n' +
+  'バッグ,エルメス,,バーキン30,2300000,140,\n' +
+  '# コメント行\n\n名前だけの行',
+);
+check('商品: タブ区切りの金額をカンマで割らない', parsed[0]?.newPrice === 1450000, JSON.stringify(parsed[0]));
+check('商品: 買取率の%を外す', parsed[0]?.retention === 105);
+check('商品: カンマ区切りも読む', parsed[1]?.name === 'バーキン30' && parsed[1]?.newPrice === 2300000);
+check('商品: 見出し・コメント・不正行を捨てる', parsed.length === 2, parsed.length);
+
+// 正解額。新品価格 × 買取率 × 状態 × 付属品
+const good = CONDITIONS.find((c) => c.id === 'A');
+const worst = CONDITIONS.find((c) => c.id === 'C');
+const full = ACCESSORIES.find((a) => a.id === 'full');
+const bare = ACCESSORIES.find((a) => a.id === 'none');
+const pGood = priceFor(rows.product, good, full);
+const pWorst = priceFor(rows.product, worst, bare);
+check('相場: 状態が悪いほど安くなる', pWorst.fair < pGood.fair, `${pWorst.fair} < ${pGood.fair}`);
+check('相場: 正解は幅で持つ', pGood.low < pGood.fair && pGood.fair < pGood.high);
+check('相場: 買取率が高い商材は新品価格を超えうる', pGood.fair > rows.product.new_price, pGood.fair);
+
+const item = drawItem(rows.product);
+check('相場: 引いた品物に状態と正解額が入る',
+  Boolean(item.condition_label && item.accessory_label && item.history && item.low && item.high));
+
+check('査定: 範囲内なら減点なし', pricePenalty(item, item.fair).penalty === 0);
+check('査定: 範囲の端も減点なし', pricePenalty(item, item.low).penalty === 0 && pricePenalty(item, item.high).penalty === 0);
+check('査定: 少し外すと軽い減点', pricePenalty(item, item.fair * 0.82).penalty === 6, pricePenalty(item, item.fair * 0.82).penalty);
+check('査定: 大きく外すと満額の減点', pricePenalty(item, item.fair * 0.4).penalty === 20);
+check('査定: 高すぎも減点', pricePenalty(item, item.fair * 2).verdict === 'high');
+// 「見せに来ただけ」の客では、額を出さないほうが正しい場面がある。出さなかったこと自体は罰さない
+check('査定: 金額を出さなかった回は減点しない', pricePenalty(item, null).penalty === 0);
+
+const withItem = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair }, item);
+check('採点: 品物ありで満点', withItem.total === 100, withItem.total);
+const missed = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair * 0.3 }, item);
+check('採点: 査定額を大きく外すと20点引く', missed.total === 80, missed.total);
+check('採点: 査定額の内訳を返す', missed.price?.verdict === 'low' && missed.breakdown.pricePenalty === 20);
+// 品物のない従来の記録は、配点の意味を変えない
+const noItem = computeTotal({ closed: false, per_axis: [{ deduction: 10 }] });
+check('採点: 品物なしなら従来どおり型で70点', noItem.total === 0 && noItem.breakdown.maxAxisPenalty === 70);
+check('採点: 品物ありなら型は50点に割る',
+  computeTotal({ closed: true, per_axis: [{ deduction: 10 }], offered_price: null }, item).breakdown.maxAxisPenalty === 50);
+
+/* --------- 受講者に正解を見せない --------- */
+
+check('秘匿: 採点前の品物は伏せる', visibleItem({ item, score: null })?.hidden === true);
+check('秘匿: 採点後は開示する', visibleItem({ item, score: { total: 80 } })?.brand === 'ロレックス');
+
+const startedWithItem = await (await post('/api/runs', { modeId: 'mode1' })).json();
+check('秘匿: 開始レスポンスに品物を含めない',
+  startedWithItem.item === undefined && startedWithItem.hasItem === true,
+  JSON.stringify(Object.keys(startedWithItem)));
+const modesForItem = await (await call('/api/modes')).json();
+check('秘匿: モードはカテゴリだけ返す（品物名は出さない）',
+  modesForItem.modes.every((m) => 'product_category' in m && 'has_fixed_product' in m));
+
+// 客役には品物が渡るが、正解額は渡らない
+const customerPrompt = systemText(lastClaude);
+check('客役: 品物が渡る', customerPrompt.includes('あなたが今日持ち込んだ品物'), customerPrompt.slice(0, 80));
+check('客役: 相場を知らないと伝える', customerPrompt.includes('適正な買取額をあなたは知りません'));
+check('客役: 正解額そのものは渡さない', !customerPrompt.includes('適正買取額は'));
+
+const scoredRun = await (await post('/api/runs/run1/score', {})).json();
+check('採点: 総合点が返る', typeof scoredRun.score?.total === 'number', JSON.stringify(scoredRun).slice(0, 120));
+
+/* ============================== 権限 ================================= */
+
+check('権限: 会社コードは英数字に正規化する', normalizeCode('Clarisse', 'x') === 'clarisse');
+check('権限: 記号は弾く', (() => { try { normalizeCode('あ社', 'x'); return false; } catch { return true; } })());
+check('権限: 1文字は弾く', (() => { try { normalizeCode('a', 'x'); return false; } catch { return true; } })());
+
+const { hash, salt } = await hashPassword('correct-horse');
+check('権限: 同じ塩なら同じハッシュ', (await hashPassword('correct-horse', salt)).hash === hash);
+check('権限: 違うパスワードは違うハッシュ', (await hashPassword('wrong-horse', salt)).hash !== hash);
+check('権限: 塩が違えばハッシュも違う', (await hashPassword('correct-horse')).hash !== hash);
+
+check('権限: 管理者は指導者を兼ねる', hasRole({ role: 'admin' }, 'trainer') && hasRole({ role: 'admin' }, 'admin'));
+check('権限: 指導者は統合できない', !hasRole({ role: 'trainer' }, 'admin') && hasRole({ role: 'trainer' }, 'trainer'));
+check('権限: 受講者はロープレだけ', !hasRole({ role: 'trainee' }, 'trainer'));
+
+/* --------- ログイン --------- */
+
+auth.company = { code: 'clarisse', name: 'A社', pass_hash: hash, pass_salt: salt, knowledge_space: 'shared', active: 1 };
+auth.staff = { id: 'staff-1', company: 'clarisse', code: '1001', name: '田中', role: 'trainee', store: '千葉店', active: 1 };
+
+const login = (payload) => post('/api/login', payload);
+const okLogin = await (await login({ company: 'clarisse', password: 'correct-horse', staffCode: '1001' })).json();
+check('ログイン: 3つ揃えば通る', okLogin.token?.length === 64 && okLogin.staff.role === 'trainee', JSON.stringify(okLogin).slice(0, 120));
+check('ログイン: 会社名と店舗を返す', okLogin.company.name === 'A社' && okLogin.staff.store === '千葉店');
+
+const badPass = await login({ company: 'clarisse', password: 'wrong', staffCode: '1001' });
+check('ログイン: パスワード違いは401', badPass.status === 401);
+check('ログイン: どれが違うかは教えない',
+  (await badPass.json()).error === '会社コード・パスワード・個人コードのいずれかが違います');
+
+auth.staff = null;
+check('ログイン: 個人コードが無ければ401',
+  (await login({ company: 'clarisse', password: 'correct-horse', staffCode: '9999' })).status === 401);
+auth.staff = { id: 'staff-1', company: 'clarisse', code: '1001', name: '田中', role: 'trainee', store: '千葉店', active: 1 };
+
+auth.company = null;
+check('ログイン: 会社が無ければ401',
+  (await login({ company: 'nosuch', password: 'correct-horse', staffCode: '1001' })).status === 401);
+auth.company = { code: 'clarisse', name: 'A社', pass_hash: hash, pass_salt: salt, knowledge_space: 'shared', active: 1 };
+
+/* --------- セッションで入ったときの見え方 --------- */
+
+const sessionToken = 'a'.repeat(64);
+const asStaff = (role, extra = {}) => {
+  auth.session = {
+    token_hash: 'x', company: 'clarisse', staff_id: 'staff-1', staff_code: '1001', staff_name: '田中',
+    role, store: '千葉店', staff_active: 1, company_active: 1, company_name: 'A社', knowledge_space: 'shared',
+    ...extra,
+  };
+  return { ...H, 'x-clarion-token': sessionToken };
+};
+
+const asGet = (path, headers) => worker.fetch(new Request(`https://w.dev${path}`, { headers }), env);
+
+check('受講者: ①蓄積は開かない', (await asGet('/api/cases', asStaff('trainee'))).status === 403);
+check('指導者: ①蓄積は開く', (await asGet('/api/cases', asStaff('trainer'))).status === 200);
+check('受講者: スタッフ管理は開かない', (await asGet('/api/staff', asStaff('trainee'))).status === 403);
+check('指導者: スタッフ管理は開かない', (await asGet('/api/staff', asStaff('trainer'))).status === 403);
+check('管理者: スタッフ管理が開く', (await asGet('/api/staff', asStaff('admin'))).status === 200);
+
+const meTrainee = await (await asGet('/api/me', asStaff('trainee'))).json();
+check('受講者: できることの一覧が正しい',
+  meTrainee.me.can.capture === false && meTrainee.me.can.merge === false && meTrainee.me.can.allRecords === false,
+  JSON.stringify(meTrainee.me.can));
+check('受講者: 所属が返る', meTrainee.me.company === 'clarisse' && meTrainee.me.store === '千葉店');
+
+const meTrainer = await (await asGet('/api/me', asStaff('trainer'))).json();
+check('指導者: 蓄積と全記録は見られるが統合はできない',
+  meTrainer.me.can.capture && meTrainer.me.can.allRecords && !meTrainer.me.can.merge);
+
+// 記録の絞り込み。受講者は自分の staff_id で絞ったSQLになる
+sqlLog = [];
+const traineeRuns = await (await asGet('/api/runs', asStaff('trainee'))).json();
+check('記録: 受講者は自分の分だけ', traineeRuns.scope === 'self');
+check('記録: 受講者の問い合わせは staff_id で絞る',
+  sqlLog.some((q) => q.includes('r.staff_id = ?')), sqlLog.join(' | ').slice(0, 200));
+sqlLog = [];
+const trainerRuns = await (await asGet('/api/runs', asStaff('trainer'))).json();
+check('記録: 指導者は会社の全員分', trainerRuns.scope === 'company');
+check('記録: 会社コードで必ず絞る', sqlLog.some((q) => q.includes('r.client = ?')));
+
+// 期限切れセッション。共有トークンとして照合し直したりはしない
+auth.session = null;
+check('セッション: 切れていれば401',
+  (await asGet('/api/me', { ...H, 'x-clarion-token': sessionToken })).status === 401);
+
+// 停止したスタッフ
+auth.session = {
+  token_hash: 'x', company: 'clarisse', staff_id: 'staff-1', staff_code: '1001', staff_name: '田中',
+  role: 'admin', store: '', staff_active: 0, company_active: 1, company_name: 'A社', knowledge_space: 'shared',
+};
+check('セッション: 停止したスタッフは弾く', (await asGet('/api/me', { ...H, 'x-clarion-token': sessionToken })).status === 401);
+auth.session = null;
+
+// 共有トークンはこれまでどおり管理者として通る
+check('移行: 共有トークンは今までどおり通る', (await call('/api/health')).status === 200);
+const legacyMe = await (await call('/api/me')).json();
+check('移行: 共有トークンは管理者扱い', legacyMe.me.role === 'admin' && legacyMe.me.via === 'token');
+check('移行: 共有トークンは会社＝ナレッジ空間', legacyMe.me.company === legacyMe.me.knowledge_space);
 
 // --- 障害時 ---
 const prev = globalThis.fetch;

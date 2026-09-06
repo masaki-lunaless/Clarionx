@@ -347,13 +347,38 @@ ${body}`,
   };
 }
 
-export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect }) {
+/**
+ * 客が持ち込んだ品物を、客役に渡す形にする。
+ *
+ * 客は品物のことは知っているが、相場は正確には知らない。
+ * ここで正解額を渡すと客が自分から答えを言ってしまうので、絶対に渡さない。
+ */
+export function itemBlockForCustomer(item) {
+  if (!item) return '';
+  return `
+
+【あなたが今日持ち込んだ品物】
+- ${[item.brand, item.name].filter(Boolean).join(' ')}${item.model ? `（型番 ${item.model}）` : ''}
+- 状態：${item.condition_label}（${item.condition_desc}）
+- 付属品：${item.accessory_label}（${item.accessory_desc}）
+- 手に入れた経緯：${item.history}
+${item.notes ? `- この品で店員が見るであろう点：${item.notes}` : ''}
+
+【品物の扱い方】
+- あなたはこの品物の持ち主です。状態や経緯を聞かれたら、上の内容に沿って答える
+- **適正な買取額をあなたは知りません。**自分から正確な金額を言わない。
+  相場を口にする場合も「ネットで見たら◯万円くらいだった」程度の、当てにならない話にする
+- 型番や状態を、聞かれてもいないのに正確に暗唱しない。客は普通そこまで覚えていない
+- 状態の悪い点（傷・欠品）を自分から先に全部は言わない。店員が見つけて聞いてきたら認める`;
+}
+
+export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, item }) {
   const type = CUSTOMER_TYPES.find((t) => t.id === customerType);
   return `あなたは接客ロールプレイの「お客様」役です。店員役の相手（研修受講者）と、音声で会話しています。
 
 【あなたの役柄】
 ${type ? `${type.label}：${type.hint}` : customerType || '一般のお客様'}
-${scenario ? `\n【場面設定】\n${scenario}` : ''}
+${scenario ? `\n【場面設定】\n${scenario}` : ''}${itemBlockForCustomer(item)}
 
 【話し方のルール】
 ${dialect ? `- この地域の言葉で話す：${dialect}\n` : ''}- 実際に声に出して読み上げられます。ト書き・状況説明・カッコ書きは一切書かない。セリフだけを書く
@@ -365,7 +390,25 @@ ${dialect ? `- この地域の言葉で話す：${dialect}\n` : ''}- 実際に�
 ${criteria ? `【参考：この店のトップ人材の判断基準（あなたは客なのでこれを口に出さない。相手がこれに沿った対応をしたときに自然に反応が良くなる、という基準としてのみ使う）】\n${criteria}` : ''}`;
 }
 
-export function scoringRequest({ history, criteria, customerType }) {
+/**
+ * 評価者に渡す品物と正解額。
+ * 正解額は Worker が計算した固定値で、AIには「合っていたか」の判断も任せない。
+ * AIの仕事は会話から提示額を抜き出すところまで。減点はコードが決める。
+ */
+export function itemBlockForScoring(item) {
+  if (!item) return '';
+  return `
+【この回で客が持ち込んだ品物】
+${[item.brand, item.name].filter(Boolean).join(' ')}${item.model ? `（型番 ${item.model}）` : ''}
+状態：${item.condition_label}／付属品：${item.accessory_label}
+
+この品物の適正買取額は ${item.low.toLocaleString('ja-JP')}円〜${item.high.toLocaleString('ja-JP')}円です。
+ただし**この金額での加点・減点はしないでください。**査定額の妥当性は別の仕組みで計算します。
+あなたは会話から「店員が提示した金額」を抜き出すことだけを行ってください。
+`;
+}
+
+export function scoringRequest({ history, criteria, customerType, item }) {
   const convo = history.map((m) => `${m.role === 'trainee' ? '店員' : '客'}：${m.text}`).join('\n');
   const type = CUSTOMER_TYPES.find((t) => t.id === customerType);
 
@@ -391,7 +434,7 @@ export function scoringRequest({ history, criteria, customerType }) {
         role: 'user',
         content: `【この客タイプにおける成約の定義】
 ${type?.goal || '客が購入・売却を決めた'}
-
+${itemBlockForScoring(item)}
 【判断基準ドキュメント】
 ${criteria}
 
@@ -407,6 +450,13 @@ ${convo}
       type: 'object',
       properties: {
         closed: { type: 'boolean', description: '上の「成約の定義」を満たしたか' },
+        offered_price: {
+          type: ['number', 'null'],
+          description:
+            '店員が客に提示した買取額（円）。複数出したら最後の額。' +
+            '「◯万円」は円に直す。金額を提示していなければ null。客が言った額は含めない',
+        },
+        offered_price_quote: { type: 'string', description: '提示額と判断した発言の引用。提示がなければ空文字' },
         closed_evidence: { type: 'string', description: 'そう判断した根拠。会話からの引用を含める' },
         headline: { type: 'string', description: '総評を一文で' },
         per_axis: {
@@ -425,7 +475,7 @@ ${convo}
         good: { type: 'array', items: { type: 'string' }, description: '良かった点' },
         next: { type: 'array', items: { type: 'string' }, description: '次回の練習で意識する点（3つまで）' },
       },
-      required: ['closed', 'closed_evidence', 'headline', 'per_axis', 'good', 'next'],
+      required: ['closed', 'closed_evidence', 'offered_price', 'offered_price_quote', 'headline', 'per_axis', 'good', 'next'],
     },
   };
 }

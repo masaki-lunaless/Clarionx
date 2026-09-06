@@ -345,3 +345,32 @@ table.records tr.detail-row > td { white-space: normal; background: var(--surfac
 .diag span:last-child { font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .chunk-players { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .chunk-players audio { width: 100%; height: 32px; }
+
+/* display を持つ要素に hidden を付けても効くようにする（.who など） */
+[hidden] { display: none !important; }
+
+/* ---- ログイン中の表示 ---- */
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: .82rem;
+  color: var(--ink-2);
+}
+.who #who-name { font-weight: 600; color: var(--ink); }
+
+/* ---- 品物（採点後に開示される） ---- */
+.item-card {
+  margin-top: 12px;
+  border-left: 3px solid var(--accent);
+}
+.item-card h4 { margin: 0 0 6px; font-size: .8rem; color: var(--ink-2); font-weight: 600; }
+.item-name { margin: 0 0 8px; font-size: 1rem; }
+.item-name .item-meta { margin-left: 10px; font-size: .78rem; color: var(--ink-2); font-weight: 400; }
+
+/* 停止したスタッフの行 */
+tr.is-off { opacity: .45; }
+tr.is-off td { text-decoration: line-through; }
+
+.input-sm { padding: 4px 6px; font-size: .8rem; }

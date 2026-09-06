@@ -192,16 +192,21 @@ export async function answeredQA(env, client, caseIds) {
 
 /* --------------------------------- 統合 ---------------------------------- */
 
-export async function listCriteria(env, client) {
+/**
+ * 判断基準の一覧。
+ * 実施回数は「自分の会社の分」だけ数える。教材は会社をまたいで共有されるが、
+ * 他社が何回練習したかは、回数であっても見せない。
+ */
+export async function listCriteria(env, client, company = client) {
   const { results } = await db(env)
     .prepare(
       `SELECT cr.id, cr.title, cr.summary, cr.qa_count, cr.source_case_ids, cr.created_at,
-              (SELECT COUNT(*) FROM runs r WHERE r.criteria_id = cr.id) AS run_count
+              (SELECT COUNT(*) FROM runs r WHERE r.criteria_id = cr.id AND r.client = ?) AS run_count
          FROM criteria cr
         WHERE cr.client = ?
         ORDER BY cr.created_at DESC`,
     )
-    .bind(client)
+    .bind(company, client)
     .all();
   return (results || []).map((r) => ({ ...r, source_case_ids: parse(r.source_case_ids, []) }));
 }
@@ -244,10 +249,11 @@ export async function deleteCriteria(env, client, id) {
 export async function listModes(env, client) {
   const { results } = await db(env)
     .prepare(
-      `SELECT m.*, cr.title AS criteria_title,
+      `SELECT m.*, cr.title AS criteria_title, p.name AS product_name,
               (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id) AS run_count
          FROM modes m
          JOIN criteria cr ON cr.id = m.criteria_id
+         LEFT JOIN products p ON p.id = m.product_id
         WHERE m.client = ?
         ORDER BY m.created_at DESC`,
     )
@@ -259,8 +265,10 @@ export async function listModes(env, client) {
 export async function getMode(env, client, id) {
   const row = await db(env)
     .prepare(
-      `SELECT m.*, cr.markdown AS criteria_markdown, cr.title AS criteria_title
-         FROM modes m JOIN criteria cr ON cr.id = m.criteria_id
+      `SELECT m.*, cr.markdown AS criteria_markdown, cr.title AS criteria_title, p.name AS product_name
+         FROM modes m
+         JOIN criteria cr ON cr.id = m.criteria_id
+         LEFT JOIN products p ON p.id = m.product_id
         WHERE m.id = ? AND m.client = ?`,
     )
     .bind(id, client)
@@ -273,10 +281,14 @@ export async function createMode(env, client, data) {
   const id = uid();
   await db(env)
     .prepare(
-      `INSERT INTO modes (id, client, name, criteria_id, customer_type, scenario, voice, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO modes (id, client, name, criteria_id, customer_type, scenario, voice, product_id, product_category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, client, data.name, data.criteriaId, data.customerType, data.scenario || '', data.voice || '', now())
+    .bind(
+      id, client, data.name, data.criteriaId, data.customerType,
+      data.scenario || '', data.voice || '',
+      data.productId || null, data.productCategory || '', now(),
+    )
     .run();
   return getMode(env, client, id);
 }
@@ -291,10 +303,13 @@ export async function createRun(env, client, data) {
   const t = now();
   await db(env)
     .prepare(
-      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, item, staff_id, store, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
     )
-    .bind(id, client, data.modeId || null, data.criteriaId || null, data.trainee || '', t, t)
+    .bind(
+      id, client, data.modeId || null, data.criteriaId || null, data.trainee || '',
+      data.item ? JSON.stringify(data.item) : null, data.staffId || '', data.store || '', t, t,
+    )
     .run();
   return id;
 }
@@ -331,20 +346,33 @@ export async function saveFeedback(env, client, id, { realism, scoring, note }) 
   if (!res.meta?.changes) throw new ApiError(404, '実施記録が見つかりません');
 }
 
-export async function listRuns(env, client, { criteriaId, limit = 100 } = {}) {
+/**
+ * 実施記録。client には会社コードが入るので、会社をまたいで見えることはない。
+ * staffId を渡すとさらにその人の分だけになる（受講者向け）。
+ */
+export async function listRuns(env, client, { criteriaId, staffId, limit = 100 } = {}) {
   const cols = `r.*, m.name AS mode_name, m.customer_type, cr.title AS criteria_title`;
   const joins = `FROM runs r LEFT JOIN modes m ON m.id = r.mode_id LEFT JOIN criteria cr ON cr.id = r.criteria_id`;
-  const sql = criteriaId
-    ? `SELECT ${cols} ${joins} WHERE r.client = ? AND r.criteria_id = ? ORDER BY r.created_at DESC LIMIT ?`
-    : `SELECT ${cols} ${joins} WHERE r.client = ? ORDER BY r.created_at DESC LIMIT ?`;
-  const stmt = criteriaId
-    ? db(env).prepare(sql).bind(client, criteriaId, limit)
-    : db(env).prepare(sql).bind(client, limit);
-  const { results } = await stmt.all();
+  const where = ['r.client = ?'];
+  const values = [client];
+  if (criteriaId) {
+    where.push('r.criteria_id = ?');
+    values.push(criteriaId);
+  }
+  if (staffId) {
+    where.push('r.staff_id = ?');
+    values.push(staffId);
+  }
+  values.push(limit);
+  const { results } = await db(env)
+    .prepare(`SELECT ${cols} ${joins} WHERE ${where.join(' AND ')} ORDER BY r.created_at DESC LIMIT ?`)
+    .bind(...values)
+    .all();
   return (results || []).map((r) => ({
     ...r,
     history: parse(r.history, []),
     score: parse(r.score, null),
+    item: parse(r.item, null),
   }));
 }
 
@@ -411,4 +439,197 @@ export function parseGlossary(text) {
     entries.push({ canonical, variants });
   }
   return entries;
+}
+
+/* ------------------------------- 商品マスタ ------------------------------ */
+
+export async function listProducts(env, client, { category, activeOnly = false } = {}) {
+  const where = ['client = ?'];
+  const values = [client];
+  if (category) {
+    where.push('category = ?');
+    values.push(category);
+  }
+  if (activeOnly) where.push('active = 1');
+  const { results } = await db(env)
+    .prepare(`SELECT * FROM products WHERE ${where.join(' AND ')} ORDER BY category, brand, name`)
+    .bind(...values)
+    .all();
+  return results || [];
+}
+
+export async function getProduct(env, client, id) {
+  const row = await db(env).prepare('SELECT * FROM products WHERE id = ? AND client = ?').bind(id, client).first();
+  if (!row) throw new ApiError(404, '商品が見つかりません');
+  return row;
+}
+
+/** モードの指定に合う品物を1点引く。指定が無ければマスタ全体から */
+export async function drawProduct(env, client, { productId, category } = {}) {
+  if (productId) return getProduct(env, client, productId);
+  const pool = await listProducts(env, client, { category, activeOnly: true });
+  if (!pool.length) {
+    throw new ApiError(
+      400,
+      category
+        ? `商品マスタに「${category}」の品物がありません。設定タブで登録してください`
+        : '商品マスタが空です。設定タブでサンプルを読み込むか、商品を登録してください',
+    );
+  }
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/**
+ * 商品マスタをまるごと置き換える。
+ * Excelからの貼り付けで一括更新する使い方を想定しているため、差分ではなく総入れ替え。
+ */
+export async function replaceProducts(env, client, rows) {
+  const t = now();
+  const stmts = [db(env).prepare('DELETE FROM products WHERE client = ?').bind(client)];
+  for (const r of rows) {
+    stmts.push(
+      db(env)
+        .prepare(
+          `INSERT INTO products (id, client, category, brand, model, name, new_price, retention, notes, active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        )
+        .bind(uid(), client, r.category, r.brand, r.model, r.name, r.newPrice, r.retention, r.notes || '', t, t),
+    );
+  }
+  await db(env).batch(stmts);
+  return rows.length;
+}
+
+export async function countProducts(env, client) {
+  const row = await db(env).prepare('SELECT COUNT(*) AS n FROM products WHERE client = ?').bind(client).first();
+  return row?.n || 0;
+}
+
+/* --------------------------------- 権限 ---------------------------------- */
+
+export async function getCompany(env, code) {
+  return db(env).prepare('SELECT * FROM companies WHERE code = ? AND active = 1').bind(code).first();
+}
+
+export async function listCompanies(env) {
+  const { results } = await db(env)
+    .prepare(
+      `SELECT c.code, c.name, c.knowledge_space, c.active, c.created_at,
+              (SELECT COUNT(*) FROM staff s WHERE s.company = c.code AND s.active = 1) AS staff_count,
+              (SELECT COUNT(*) FROM runs r WHERE r.client = c.code) AS run_count
+         FROM companies c ORDER BY c.created_at`,
+    )
+    .all();
+  return results || [];
+}
+
+export async function upsertCompany(env, { code, name, hash, salt, knowledgeSpace }) {
+  const t = now();
+  await db(env)
+    .prepare(
+      `INSERT INTO companies (code, name, pass_hash, pass_salt, knowledge_space, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(code) DO UPDATE SET
+         name = excluded.name, pass_hash = excluded.pass_hash, pass_salt = excluded.pass_salt,
+         knowledge_space = excluded.knowledge_space, active = 1, updated_at = excluded.updated_at`,
+    )
+    .bind(code, name, hash, salt, knowledgeSpace, t, t)
+    .run();
+}
+
+export async function deleteCompany(env, code) {
+  await db(env).prepare('DELETE FROM sessions WHERE company = ?').bind(code).run();
+  await db(env).prepare('DELETE FROM staff WHERE company = ?').bind(code).run();
+  const res = await db(env).prepare('DELETE FROM companies WHERE code = ?').bind(code).run();
+  if (!res.meta?.changes) throw new ApiError(404, '会社が見つかりません');
+}
+
+export async function getStaffByCode(env, company, code) {
+  return db(env)
+    .prepare('SELECT * FROM staff WHERE company = ? AND code = ? AND active = 1')
+    .bind(company, code)
+    .first();
+}
+
+export async function listStaff(env, company) {
+  const { results } = await db(env)
+    .prepare(
+      `SELECT s.*, (SELECT COUNT(*) FROM runs r WHERE r.staff_id = s.id) AS run_count
+         FROM staff s WHERE s.company = ? ORDER BY s.active DESC, s.code`,
+    )
+    .bind(company)
+    .all();
+  return results || [];
+}
+
+export async function createStaff(env, company, { code, name, role, store }) {
+  const existing = await db(env)
+    .prepare('SELECT id FROM staff WHERE company = ? AND code = ?')
+    .bind(company, code)
+    .first();
+  if (existing) throw new ApiError(409, `個人コード「${code}」はすでに使われています`);
+  const id = uid();
+  await db(env)
+    .prepare(
+      `INSERT INTO staff (id, company, code, name, role, store, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+    )
+    .bind(id, company, code, name, role, store || '', now())
+    .run();
+  return db(env).prepare('SELECT * FROM staff WHERE id = ?').bind(id).first();
+}
+
+export async function updateStaff(env, company, id, fields) {
+  const allowed = { name: 'name', role: 'role', store: 'store', active: 'active' };
+  const sets = [];
+  const values = [];
+  for (const [key, col] of Object.entries(allowed)) {
+    if (fields[key] === undefined) continue;
+    sets.push(`${col} = ?`);
+    values.push(key === 'active' ? (fields[key] ? 1 : 0) : fields[key]);
+  }
+  if (!sets.length) return;
+  values.push(id, company);
+  const res = await db(env)
+    .prepare(`UPDATE staff SET ${sets.join(', ')} WHERE id = ? AND company = ?`)
+    .bind(...values)
+    .run();
+  if (!res.meta?.changes) throw new ApiError(404, 'スタッフが見つかりません');
+  // 権限を落としたり停止したりしたら、いま開いているセッションも切る
+  if (fields.role !== undefined || fields.active !== undefined) {
+    await db(env).prepare('DELETE FROM sessions WHERE staff_id = ?').bind(id).run();
+  }
+}
+
+export async function deleteStaff(env, company, id) {
+  await db(env).prepare('DELETE FROM sessions WHERE staff_id = ?').bind(id).run();
+  const res = await db(env).prepare('DELETE FROM staff WHERE id = ? AND company = ?').bind(id, company).run();
+  if (!res.meta?.changes) throw new ApiError(404, 'スタッフが見つかりません');
+}
+
+export async function createSession(env, { tokenHash, company, staffId, expiresAt }) {
+  await db(env)
+    .prepare('INSERT INTO sessions (token_hash, company, staff_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(tokenHash, company, staffId, now(), expiresAt)
+    .run();
+  // 期限切れはここで掃除する。cronを足さずに済ませるため
+  await db(env).prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now()).run();
+}
+
+export async function findSession(env, tokenHash) {
+  return db(env)
+    .prepare(
+      `SELECT se.*, s.code AS staff_code, s.name AS staff_name, s.role, s.store, s.active AS staff_active,
+              c.name AS company_name, c.knowledge_space, c.active AS company_active
+         FROM sessions se
+         JOIN staff s ON s.id = se.staff_id
+         JOIN companies c ON c.code = se.company
+        WHERE se.token_hash = ? AND se.expires_at > ?`,
+    )
+    .bind(tokenHash, now())
+    .first();
+}
+
+export async function deleteSession(env, tokenHash) {
+  await db(env).prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
 }
