@@ -1,47 +1,7 @@
-import { api, ClarionError } from './api.js';
+import { api } from './api.js';
+import { $, $$, debounce, esc, run, status } from './ui.js';
 import { settings } from './store.js';
 import { DEFAULTS, canExtract, extractChunks, fmtDuration } from './media.js';
-
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
-const esc = (s) =>
-  String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-function status(el, message, kind = '') {
-  el.textContent = message;
-  el.className = `status ${kind}`;
-}
-
-const debounce = (fn, ms = 500) => {
-  let t;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
-};
-
-/** 実行中はボタンを止め、失敗したらstatusにだけ出す（画面は壊さない） */
-async function run(button, statusEl, message, task) {
-  const label = button?.textContent;
-  if (button) {
-    button.disabled = true;
-    button.textContent = '処理中…';
-  }
-  status(statusEl, message);
-  try {
-    const result = await task();
-    if (statusEl.textContent === message) status(statusEl, '');
-    return result;
-  } catch (err) {
-    status(statusEl, err instanceof ClarionError ? err.message : String(err?.message || err), 'error');
-    return null;
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = label;
-    }
-  }
-}
 
 /* -------------------------------- 全体状態 ------------------------------- */
 
@@ -101,9 +61,13 @@ function applyPermissions() {
 
   const who = $('#who');
   if (who) {
-    who.hidden = !me || me.via !== 'login';
+    who.hidden = !me;
     const roleLabel = (config.roles || []).find((r) => r.id === me?.role)?.label || '';
-    $('#who-name').textContent = me ? `${me.company_name}／${me.staff_name}（${roleLabel}${me.store ? `・${me.store}` : ''}）` : '';
+    $('#who-name').textContent = !me
+      ? ''
+      : me.staff_name
+        ? `${me.company_name}／${me.staff_name}（${roleLabel}${me.store ? `・${me.store}` : ''}）`
+        : `${me.company_name}（共有トークン）`;
   }
 
   // いま開いているタブが見えなくなったら、練習へ寄せる
@@ -139,23 +103,6 @@ const extractOptions = () => ({
   trim: settings.get('trim') !== false,
 });
 
-// ブランド・用語マスタ（Worker側に保存され、全員で共有される）
-async function loadGlossary() {
-  const box = $('#glossary');
-  if (!box) return;
-  const data = await api.getGlossary().catch(() => null);
-  if (!data) return;
-  box.value = data.text || '';
-  const d = $('#dialect');
-  if (d) d.value = data.dialect || '';
-}
-
-$('#save-glossary')?.addEventListener('click', async (e) => {
-  const el = $('#glossary-status');
-  const out = await run(e.target, el, '保存中…', () => api.saveGlossary($('#glossary').value, $('#dialect')?.value || ''));
-  if (out) status(el, `保存しました（${out.count}件、うち誤りの登録${out.variants}件）`, 'ok');
-});
-
 $('#test-connection').addEventListener('click', async (e) => {
   const el = $('#settings-status');
   const cfg = await run(e.target, el, '接続中…', () => api.config());
@@ -172,179 +119,9 @@ function applyConfig(cfg) {
   fill($('#fb-scoring'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.scoring]);
   fill($('#mode-customer'), config.customerTypes);
   fill($('#mode-voice'), [{ value: '', label: 'Worker既定の声' }, ...config.voices]);
-  if (config.roles) fill($('#staff-role'), config.roles.map((r) => ({ value: r.id, label: r.label })));
   me = cfg.me || me;
   applyPermissions();
 }
-
-/* ------------------------- 商品・スタッフ・会社 --------------------------- */
-
-// 商品マスタは貼り付けテキストで総入れ替えする。用語マスタと同じ扱い方に揃えている
-const productLine = (p) =>
-  [p.category, p.brand, p.model, p.name, p.new_price, p.retention, p.notes].join('\t');
-
-async function loadProducts() {
-  const box = $('#products');
-  if (!box) return;
-  const data = await api.listProducts().catch(() => null);
-  if (!data) return;
-  box.value = data.products.map(productLine).join('\n');
-  status($('#products-status'), data.products.length ? `${data.products.length}件` : 'まだ空です');
-}
-
-$('#save-products')?.addEventListener('click', async (e) => {
-  const el = $('#products-status');
-  const out = await run(e.target, el, '保存中…', () => api.saveProducts($('#products').value));
-  if (out) {
-    status(el, `${out.count}件を登録しました`, 'ok');
-    await refreshModes();
-  }
-});
-
-$('#seed-products')?.addEventListener('click', async (e) => {
-  if (!confirm('いま登録されている商品をすべて消して、サンプル100点に入れ替えます。よろしいですか。')) return;
-  const el = $('#products-status');
-  const out = await run(e.target, el, '読み込み中…', () => api.seedProducts());
-  if (!out) return;
-  await loadProducts();
-  status(el, `${out.count}件を読み込みました。相場は現場に合わせて直してください`, 'ok');
-});
-
-// スタッフ
-let staffList = [];
-
-// 共有トークンで入った管理者は会社をまたいで面倒を見るので、対象を選ばせる。
-// ログインした管理者は自分の会社しか触れないので、選択欄は出さない
-let staffCompany = '';
-
-async function loadStaff() {
-  const table = $('#staff-table');
-  if (!table) return;
-  const data = await api.listStaff(staffCompany || undefined).catch(() => null);
-  if (!data) return;
-  staffCompany = data.company;
-  staffList = data.staff;
-  const roleLabel = (id) => (config.roles || []).find((r) => r.id === id)?.label || id;
-  table.innerHTML = `
-    <thead><tr><th>個人コード</th><th>氏名</th><th>店舗</th><th>権限</th><th>実施</th><th></th></tr></thead>
-    <tbody>${staffList
-      .map(
-        (st) => `<tr class="${st.active ? '' : 'is-off'}">
-          <td>${esc(st.code)}</td><td>${esc(st.name)}</td><td>${esc(st.store || '')}</td>
-          <td>
-            <select class="input input-sm" data-staff-role="${esc(st.id)}">
-              ${(config.roles || []).map((r) => `<option value="${esc(r.id)}" ${r.id === st.role ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
-            </select>
-          </td>
-          <td>${esc(st.run_count ?? 0)}回</td>
-          <td>
-            <button class="btn btn-ghost btn-sm" data-staff-toggle="${esc(st.id)}">${st.active ? '停止' : '再開'}</button>
-            <button class="btn btn-ghost btn-sm danger" data-staff-del="${esc(st.id)}">削除</button>
-          </td>
-        </tr>`,
-      )
-      .join('')}</tbody>`;
-  if (!staffList.length) status($('#staff-status'), `${staffCompany} にはまだ誰も登録されていません`);
-}
-
-$('#staff-table')?.addEventListener('change', async (e) => {
-  const id = e.target.dataset.staffRole;
-  if (!id) return;
-  const el = $('#staff-status');
-  const ok = await run(null, el, '変更中…', () => api.updateStaff(id, { role: e.target.value, company: staffCompany || undefined }));
-  // 権限を変えるとその人はログインし直しになる。黙って切れると理由が分からないので伝える
-  if (ok) status(el, '権限を変えました。その人は次回ログインから反映されます', 'ok');
-});
-
-$('#staff-table')?.addEventListener('click', async (e) => {
-  const el = $('#staff-status');
-  const toggle = e.target.dataset.staffToggle;
-  if (toggle) {
-    const target = staffList.find((st) => st.id === toggle);
-    if (await run(null, el, '変更中…', () => api.updateStaff(toggle, { active: !target.active, company: staffCompany || undefined }))) {
-      await loadStaff();
-      status(el, '変えました', 'ok');
-    }
-    return;
-  }
-  const del = e.target.dataset.staffDel;
-  if (!del) return;
-  const target = staffList.find((st) => st.id === del);
-  if (!confirm(`${target?.name || ''}（${target?.code || ''}）を削除します。実施記録は残ります。よろしいですか。`)) return;
-  if (await run(null, el, '削除中…', () => api.deleteStaff(del, staffCompany))) {
-    await loadStaff();
-    status(el, '削除しました', 'ok');
-  }
-});
-
-$('#add-staff')?.addEventListener('click', async (e) => {
-  const el = $('#staff-status');
-  const out = await run(e.target, el, '追加中…', () =>
-    api.createStaff({
-      code: $('#staff-code').value,
-      name: $('#staff-name').value,
-      store: $('#staff-store').value,
-      role: $('#staff-role').value,
-      company: staffCompany || undefined,
-    }),
-  );
-  if (!out) return;
-  $('#staff-code').value = '';
-  $('#staff-name').value = '';
-  await loadStaff();
-  status(el, '追加しました', 'ok');
-});
-
-// 会社
-async function loadCompanies() {
-  const table = $('#company-table');
-  if (!table) return;
-  const data = await api.listCompanies().catch(() => null);
-  if (!data) return;
-  // スタッフ管理の対象になる会社の一覧も、ここで作った結果から埋める
-  const picker = $('#staff-company');
-  if (picker && me?.via === 'token') {
-    $('#staff-company-wrap').hidden = false;
-    picker.innerHTML = data.companies.map((c) => `<option value="${esc(c.code)}" ${c.code === staffCompany ? 'selected' : ''}>${esc(c.name)}（${esc(c.code)}）</option>`).join('');
-    if (!data.companies.some((c) => c.code === staffCompany)) {
-      staffCompany = data.companies[0]?.code || '';
-      picker.value = staffCompany;
-      await loadStaff();
-    }
-  }
-
-  table.innerHTML = `
-    <thead><tr><th>会社コード</th><th>会社名</th><th>ナレッジ空間</th><th>人数</th><th>実施</th></tr></thead>
-    <tbody>${data.companies
-      .map(
-        (c) => `<tr>
-          <td>${esc(c.code)}</td><td>${esc(c.name)}</td><td>${esc(c.knowledge_space)}</td>
-          <td>${esc(c.staff_count ?? 0)}人</td><td>${esc(c.run_count ?? 0)}回</td>
-        </tr>`,
-      )
-      .join('')}</tbody>`;
-}
-
-$('#staff-company')?.addEventListener('change', async (e) => {
-  staffCompany = e.target.value;
-  await loadStaff();
-});
-
-$('#save-company')?.addEventListener('click', async (e) => {
-  const el = $('#company-status');
-  const out = await run(e.target, el, '登録中…', () =>
-    api.saveCompany({
-      code: $('#company-code').value,
-      name: $('#company-name').value,
-      password: $('#company-password').value,
-      knowledgeSpace: $('#company-space').value,
-    }),
-  );
-  if (!out) return;
-  $('#company-password').value = '';
-  await loadCompanies();
-  status(el, `${out.code} を登録しました`, 'ok');
-});
 
 /* ------------------------------- ログイン -------------------------------- */
 
@@ -357,12 +134,6 @@ async function afterConnect(cfg, el) {
     'ok',
   );
   await refreshAll();
-  if (me?.can?.masters) {
-    await loadGlossary();
-    await loadProducts();
-    await loadCompanies();
-    await loadStaff();
-  }
   // 初回は練習から触ってもらうのが分かりやすい
   if (!cases.length && modes.length) await activateTab('practice');
 }

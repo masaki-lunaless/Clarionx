@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clarion 管理コンソール</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">Clarion</span>
+    <span class="tagline">管理コンソール</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-tab="products" role="tab">商品マスタ</button>
+    <button class="tab" data-tab="glossary" role="tab">ブランド・用語</button>
+    <button class="tab" data-tab="staff" role="tab">スタッフ</button>
+    <button class="tab" data-tab="companies" role="tab">会社</button>
+    <button class="tab" data-tab="account" role="tab">接続</button>
+  </nav>
+  <div class="who" id="who" hidden>
+    <span id="who-name"></span>
+    <a class="btn btn-ghost btn-sm" href="../">練習画面へ</a>
+    <button class="btn btn-ghost btn-sm" id="logout">ログアウト</button>
+  </div>
+</header>
+
+<div class="banner" id="connect-banner" hidden>
+  <span id="connect-message">まだサーバーに接続していません。「接続」を開いてログインしてください。</span>
+  <button class="btn btn-sm" id="go-account">接続を開く</button>
+</div>
+
+<div class="banner" id="denied-banner" hidden>
+  <span>この画面は管理者だけが使えます。権限のある個人コードでログインし直してください。</span>
+</div>
+
+<main>
+  <!-- 商品マスタ -->
+  <section class="panel is-active" id="panel-products">
+    <div class="content">
+      <h2>商品マスタ</h2>
+      <p class="hint">
+        ロープレでお客様が持ち込む品物です。<strong>ここに登録した中から1点が実施ごとに選ばれ、状態と正解の買取額がその場で決まります。</strong>
+        受講者には採点が終わるまで品物も正解額も見えません。
+      </p>
+      <p class="hint">
+        1行1件、<code>カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考</code> の順。Excelからそのまま貼り付けられます。
+      </p>
+      <p class="hint">
+        <strong>買取率</strong>は「美品の状態で、新品価格の何％で買い取るか」です。ロレックスや終売の酒は100を超え、
+        量販の家電やファッションジュエリーは10〜20になります。<strong>ここが実際の相場とずれると正解額もずれます。</strong>
+        サンプルの数字は初期値なので、現場の感覚に合わせて直してください。
+      </p>
+
+      <div class="row row-actions">
+        <input class="input" id="product-filter" placeholder="絞り込み（ブランド・商品名・カテゴリ）">
+        <span class="status" id="product-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="records" id="product-table"></table>
+      </div>
+
+      <details class="block">
+        <summary>まとめて貼り付けて入れ替える</summary>
+        <p class="hint"><strong>入れ替えです。</strong>いま入っている商品が消えて、この欄の内容になります。</p>
+        <textarea class="input textarea-lg" id="products" placeholder="腕時計&#9;ロレックス&#9;126610LN&#9;サブマリーナ デイト&#9;1450000&#9;105&#9;研磨歴を見る"></textarea>
+        <div class="row row-actions">
+          <button class="btn btn-primary" id="save-products">この内容で入れ替える</button>
+          <button class="btn" id="copy-products">いまの内容を書き出す</button>
+          <button class="btn" id="seed-products">サンプル100点を読み込む</button>
+          <span class="status" id="products-status"></span>
+        </div>
+      </details>
+
+      <details class="block">
+        <summary>正解額の計算を確かめる</summary>
+        <p class="hint">商品と状態を選ぶと、その組み合わせでの正解額が出ます。買取率を直す前後の確認に使ってください。</p>
+        <div class="fb-grid">
+          <label class="label">商品
+            <select class="input" id="calc-product"></select>
+          </label>
+          <label class="label">状態
+            <select class="input" id="calc-condition"></select>
+          </label>
+          <label class="label">付属品
+            <select class="input" id="calc-accessory"></select>
+          </label>
+        </div>
+        <div id="calc-result" class="breakdown"></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ブランド・用語 -->
+  <section class="panel" id="panel-glossary">
+    <div class="content narrow">
+      <h2>ブランド・用語マスタ</h2>
+      <p class="hint">
+        書き起こしの精度向上と、表記揺れの統一に使われます。1行1件、<code>正式表記 = よくある誤り1, 誤り2</code> の形式。
+        誤りが無ければ正式表記だけでも構いません。Excelから貼り付けられます。
+        <strong>ここに載っている語だけが自動で直され、載っていない固有名詞は触りません。</strong>
+      </p>
+      <textarea class="input textarea-lg" id="glossary" placeholder="ヴァンドーム青山 = バンドーム, バンドーム青山&#10;スタージュエリー = チェスタージュエリー&#10;カルティエ = カルチェ"></textarea>
+
+      <label class="label">この店の言葉づかい・方言
+        <input class="input" id="dialect" placeholder="例：関西弁。ほんま、なんぼ、〜やねん、せやなあ、おおきに">
+      </label>
+      <p class="hint">
+        入れておくと、<strong>書き起こしが標準語に直されるのを防ぎます</strong>。ロープレのお客様も同じ言葉づかいで話します。
+        方言そのものが判断基準の材料になるため、標準語に均されると本人の言葉が失われます。
+      </p>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="save-glossary">マスタを保存</button>
+        <span class="status" id="glossary-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- スタッフ -->
+  <section class="panel" id="panel-staff">
+    <div class="content">
+      <h2>スタッフ（個人コード）</h2>
+      <p class="hint">
+        個人コードで、見える範囲と触れる範囲が決まります。<br>
+        <strong>受講者</strong>…ロープレと自分の記録だけ／<strong>指導者</strong>…①接客を集める・会社全員の記録／<strong>管理者</strong>…③統合とマスタ編集、スタッフ管理
+      </p>
+      <p class="hint">パスワードは会社で共通です。個人コードは本人確認ではなく、見せる範囲の切り分けだと考えてください。</p>
+
+      <label class="label" id="staff-company-wrap" hidden>対象の会社
+        <select class="input" id="staff-company"></select>
+      </label>
+      <div class="table-wrap">
+        <table class="records" id="staff-table"></table>
+      </div>
+      <div class="fb-grid">
+        <label class="label">個人コード
+          <input class="input" id="staff-code" placeholder="例：1001">
+        </label>
+        <label class="label">氏名
+          <input class="input" id="staff-name" placeholder="例：田中">
+        </label>
+        <label class="label">店舗
+          <input class="input" id="staff-store" placeholder="例：千葉店">
+        </label>
+        <label class="label">権限
+          <select class="input" id="staff-role"></select>
+        </label>
+      </div>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="add-staff">スタッフを追加</button>
+        <span class="status" id="staff-status"></span>
+      </div>
+      <p class="hint">権限を変えると、その人は一度ログアウトされます（次のログインから新しい権限になります）。</p>
+    </div>
+  </section>
+
+  <!-- 会社 -->
+  <section class="panel" id="panel-companies">
+    <div class="content">
+      <h2>会社</h2>
+      <p class="hint">
+        <strong>実施記録は会社ごとに必ず分かれます。</strong>教材（案件・判断基準・モード・商品・用語）は
+        「ナレッジ空間」が同じ会社どうしで共有されます。2社で同じ教材を使い、記録は混ぜない、という運用がこれになります。
+      </p>
+      <div class="table-wrap">
+        <table class="records" id="company-table"></table>
+      </div>
+      <div class="fb-grid">
+        <label class="label">会社コード
+          <input class="input" id="company-code" placeholder="例：clarisse">
+        </label>
+        <label class="label">会社名
+          <input class="input" id="company-name" placeholder="例：◯◯株式会社">
+        </label>
+        <label class="label">パスワード（8文字以上）
+          <input class="input" id="company-password" type="password" placeholder="会社共通のパスワード">
+        </label>
+        <label class="label">ナレッジ空間
+          <input class="input" id="company-space" placeholder="空ならいまと同じ空間">
+        </label>
+      </div>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="save-company">会社を登録・パスワード変更</button>
+        <span class="status" id="company-status"></span>
+      </div>
+      <p class="hint">
+        既にある会社コードを入れると、名前とパスワードの変更になります。
+        <strong>パスワードを変えると、その会社の全員がログインし直しになります。</strong>
+      </p>
+    </div>
+  </section>
+
+  <!-- 接続 -->
+  <section class="panel" id="panel-account">
+    <div class="content narrow">
+      <h2>接続</h2>
+      <p class="hint">練習画面と同じ設定を使います。片方でログインすれば、もう片方も入れます。</p>
+      <label class="label">Worker URL
+        <input class="input" id="worker-url" placeholder="https://clarion-proxy.xxxx.workers.dev">
+      </label>
+      <div class="fb-grid">
+        <label class="label">会社コード
+          <input class="input" id="login-company" autocomplete="organization" placeholder="例：clarisse">
+        </label>
+        <label class="label">個人コード
+          <input class="input" id="login-staff" autocomplete="username" placeholder="例：1001">
+        </label>
+      </div>
+      <label class="label">パスワード
+        <input class="input" id="login-password" type="password" autocomplete="current-password">
+      </label>
+      <div class="row row-actions">
+        <button class="btn btn-primary" id="login-btn">ログイン</button>
+        <span class="status" id="login-status"></span>
+      </div>
+
+      <details class="block">
+        <summary>共有トークンで入る（従来の方法）</summary>
+        <p class="hint">会社をまだ1つも作っていない段階では、こちらで入って会社とスタッフを登録します。この入口の管理者だけは、どの会社のスタッフも操作できます。</p>
+        <label class="label">アクセストークン
+          <input class="input" id="access-token" type="password">
+        </label>
+        <div class="row row-actions">
+          <button class="btn" id="test-connection">接続テスト</button>
+          <span class="status" id="settings-status"></span>
+        </div>
+      </details>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="admin.js"></script>
+</body>
+</html>

@@ -61,6 +61,8 @@ export const api = {
   listProducts: () => request('GET', '/api/products'),
   saveProducts: (text) => request('POST', '/api/products', { text }),
   seedProducts: () => request('POST', '/api/products/seed', {}),
+  quote: (id, condition, accessory) =>
+    request('GET', `/api/products/${id}/quote?condition=${encodeURIComponent(condition)}&accessory=${encodeURIComponent(accessory)}`),
   listStaff: (company) => request('GET', `/api/staff${company ? `?company=${encodeURIComponent(company)}` : ''}`),
   createStaff: (data) => request('POST', '/api/staff', data),
   updateStaff: (id, data) => request('PATCH', `/api/staff/${id}`, data),

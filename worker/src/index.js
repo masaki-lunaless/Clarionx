@@ -9,7 +9,7 @@
 
 import { ApiError, EFFORT, MODELS, generateStructured, generateText } from './llm.js';
 import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
-import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItem, pricePenalty } from './items.js';
+import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItem, priceFor, pricePenalty } from './items.js';
 import { SEED_PRODUCTS } from './seed-products.js';
 import {
   ROLE_LIST, hashPassword, hasRole, newSessionToken, normalizeCode,
@@ -762,6 +762,25 @@ const routes = [
       requireRole(auth, 'trainer');
       const products = await db.listProducts(env, auth.client);
       return { products, categories: [...new Set(products.map((p) => p.category).filter(Boolean))] };
+    },
+  ],
+
+  // 正解額の試算。管理コンソールの確認用。
+  // 計算式を画面側に写すと本番とずれるので、同じ関数をここから呼ぶ
+  [
+    'GET',
+    '/api/products/:id/quote',
+    async ({ env, auth, params, url }) => {
+      requireRole(auth, 'trainer');
+      const product = await db.getProduct(env, auth.client, params.id);
+      const condition = CONDITIONS.find((c) => c.id === url.searchParams.get('condition')) || CONDITIONS[1];
+      const accessory = ACCESSORIES.find((a) => a.id === url.searchParams.get('accessory')) || ACCESSORIES[1];
+      return {
+        product: { name: product.name, brand: product.brand, new_price: product.new_price, retention: product.retention },
+        condition: { id: condition.id, label: condition.label, ratio: condition.ratio },
+        accessory: { id: accessory.id, label: accessory.label, ratio: accessory.ratio },
+        ...priceFor(product, condition, accessory),
+      };
     },
   ],
 
