@@ -91,11 +91,12 @@ export async function generateText(env, { model, system, messages, maxTokens = 2
  * tool useを強制して構造化JSONを受け取る。
  * 「JSONで返して」とお願いするより崩れにくい。
  */
-export async function generateStructured(env, { model, system, messages, schema, toolName, toolDescription, maxTokens = 4000, effort, cacheSystem, label }) {
+export async function generateStructured(env, { model, system, messages, schema, toolName, toolDescription, maxTokens = 4000, temperature, effort, cacheSystem, label }) {
   const data = await callClaude(env, {
     model: model || MODELS.analysis,
     max_tokens: maxTokens,
     ...(system ? { system: systemParam(system, cacheSystem) } : {}),
+    ...(temperature === undefined ? {} : { temperature }),
     ...(effort ? { output_config: { effort } } : {}),
     messages,
     tools: [

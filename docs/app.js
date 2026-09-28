@@ -110,6 +110,39 @@ $('#test-connection').addEventListener('click', async (e) => {
   await afterConnect(cfg, el);
 });
 
+/**
+ * 客タイプを2トラックに分けて並べる。
+ * 通常と大逆転は作る目的が違うので、同じ平たい一覧に混ぜない。
+ */
+function fillTypeGroups(el, types, tracks) {
+  if (!el) return;
+  el.innerHTML = (tracks || [{ id: 'standard', label: 'すべて' }])
+    .map((tr) => {
+      const inTrack = (types || []).filter((t) => (t.track || 'standard') === tr.id);
+      if (!inTrack.length) return '';
+      return `<optgroup label="${esc(tr.label)}｜${esc(tr.hint || '')}">
+        ${inTrack.map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('')}
+      </optgroup>`;
+    })
+    .join('');
+}
+
+/** 選んだ客タイプが何を試す型なのかを、モードを作る前に見せる */
+function renderTypeDetail() {
+  const box = $('#mode-type-detail');
+  if (!box) return;
+  const t = (config.customerTypes || []).find((x) => x.id === $('#mode-customer').value);
+  if (!t) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = `
+    <span class="pill ${t.track === 'reversal' ? '' : 'yes'}">${t.track === 'reversal' ? '大逆転' : '通常'}</span>
+    <span>${esc(t.hint.split('\n')[0])}</span>
+    <span><strong>折れる条件：</strong>${(t.flags || []).map((f) => esc(f.label)).join(' ／ ')}</span>
+    <span><strong>禁じ手：</strong>${esc(t.breaker || '')}</span>`;
+}
+
 function applyConfig(cfg) {
   config = { ...config, ...cfg };
   const fill = (el, options, selected) => {
@@ -117,7 +150,7 @@ function applyConfig(cfg) {
   };
   fill($('#fb-realism'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.realism]);
   fill($('#fb-scoring'), [{ value: '', label: '（未評価）' }, ...config.feedbackOptions.scoring]);
-  fill($('#mode-customer'), config.customerTypes);
+  fillTypeGroups($('#mode-customer'), config.customerTypes, config.tracks);
   fill($('#mode-voice'), [{ value: '', label: 'Worker既定の声' }, ...config.voices]);
   me = cfg.me || me;
   applyPermissions();
@@ -581,11 +614,23 @@ $('#start-run').addEventListener('click', async (e) => {
   setPractice(true);
 });
 
+const faceOf = (id) => (config.moods || []).find((m) => m.id === id)?.face || '';
+
+/**
+ * 表情を発話のそばに出す。
+ * 対面なら相手の顔で分かることが、音声だけのロープレでは落ちてしまう。
+ * 声の演技にも同じ心境を載せているが、それだけでは読み取れない人もいる。
+ * 「どこまで折れたか」は出さない。そちらは答えそのもの。
+ */
 function renderConvo(history) {
   $('#convo').innerHTML = history
-    .map(
-      (m) => `<div class="bubble ${m.role}"><span class="who">${m.role === 'trainee' ? 'あなた' : 'お客様'}</span><p>${esc(m.text)}</p></div>`,
-    )
+    .map((m) => {
+      const face = m.role === 'customer' ? faceOf(m.mood) : '';
+      return `<div class="bubble ${m.role}">
+        <span class="who">${m.role === 'trainee' ? 'あなた' : 'お客様'}${face ? `<em class="face">${esc(face)}</em>` : ''}</span>
+        <p>${esc(m.text)}</p>
+      </div>`;
+    })
     .join('');
   $('#convo').scrollTop = $('#convo').scrollHeight;
 }
@@ -654,6 +699,33 @@ function renderItem(item, price) {
     </div>`;
 }
 
+/**
+ * 折れる条件の到達状況。
+ * 成約したかの二値だけだと、不成約の回がすべて同じ顔になる。
+ * 「2つまでは立っていた」が見えると、次に何をすればよいかが残る。
+ */
+function renderFlags(score) {
+  const flags = score.flags || [];
+  if (!flags.length) return '';
+  const met = flags.filter((f) => f.met).length;
+  return `
+    <div class="card flags-card">
+      <h4>お客様が折れる条件（${met}／${flags.length} 到達）${score.track === 'reversal' ? '<span class="pill">大逆転</span>' : ''}</h4>
+      ${flags
+        .map(
+          (f) => `<div class="axis">
+            <div class="axis-head">
+              <strong>${esc(f.label)}</strong>
+              <span class="deduction ${f.met ? 'zero' : ''}">${f.met ? '到達' : '未到達'}</span>
+            </div>
+            ${f.evidence ? `<p class="evidence">${esc(f.evidence)}</p>` : ''}
+          </div>`,
+        )
+        .join('')}
+      ${score.breaker ? `<p class="advice">やってはいけないこと：${esc(score.breaker)}</p>` : ''}
+    </div>`;
+}
+
 function renderScore(s, item) {
   const b = s.breakdown || {};
   $('#score-result').innerHTML = `
@@ -679,6 +751,7 @@ function renderScore(s, item) {
       ${(s.good || []).length ? `<h4>良かった点</h4><ul>${s.good.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
       ${(s.next || []).length ? `<h4>次に意識すること</h4><ul>${s.next.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
     </div>
+    ${renderFlags(s)}
     ${renderItem(item, s.price)}`;
 }
 
@@ -839,6 +912,7 @@ async function openModeDialog(criteriaId) {
   $('#mode-name').value = '';
   $('#mode-scenario').value = '';
   await fillProductPickers();
+  renderTypeDetail();
   $('#mode-dialog').showModal();
 }
 
@@ -872,6 +946,8 @@ async function fillProductPickers() {
     prodSel.innerHTML = '<option value="">—</option>';
   }
 }
+
+$('#mode-customer').addEventListener('change', renderTypeDetail);
 
 $('#mode-dialog').addEventListener('close', async () => {
   if ($('#mode-dialog').returnValue !== 'ok') return;
@@ -984,6 +1060,7 @@ $('#records-table').addEventListener('click', (e) => {
           <span class="deduction ${a.deduction ? '' : 'zero'}">${a.deduction ? `−${esc(a.deduction)}` : '減点なし'}</span></div>
           <p class="evidence">${esc(a.evidence)}</p><p class="advice">→ ${esc(a.advice)}</p></div>`)
         .join('')}</div>` : '<p class="hint">この回は採点されていません。</p>'}
+    ${r.score ? renderFlags(r.score) : ''}
     ${r.item && !r.item.hidden ? renderItem(r.item, r.score?.price) : ''}
     ${r.fb_note ? `<p class="hint">フィードバック：${esc(r.fb_note)}</p>` : ''}
   </td>`;

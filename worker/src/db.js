@@ -246,18 +246,19 @@ export async function deleteCriteria(env, client, id) {
 
 /* ------------------------------- ロープレ -------------------------------- */
 
-export async function listModes(env, client) {
+/** モード一覧。実施回数は判断基準と同じく、自分の会社の分だけ数える */
+export async function listModes(env, client, company = client) {
   const { results } = await db(env)
     .prepare(
       `SELECT m.*, cr.title AS criteria_title, p.name AS product_name,
-              (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id) AS run_count
+              (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id AND r.client = ?) AS run_count
          FROM modes m
          JOIN criteria cr ON cr.id = m.criteria_id
          LEFT JOIN products p ON p.id = m.product_id
         WHERE m.client = ?
         ORDER BY m.created_at DESC`,
     )
-    .bind(client)
+    .bind(company, client)
     .all();
   return results || [];
 }

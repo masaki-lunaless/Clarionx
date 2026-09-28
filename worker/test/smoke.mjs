@@ -1,12 +1,12 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
-import worker, { SCORING, computeTotal, parseProducts, stripPreamble, stripStageDirections, visibleItem } from '../src/index.js';
+import worker, { SCORING, computeTotal, parseProducts, stateOf, stripPreamble, stripStageDirections, visibleHistory, visibleItem, withFlagLabels } from '../src/index.js';
 import { drawItem, priceFor, pricePenalty, CONDITIONS, ACCESSORIES } from '../src/items.js';
 import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
 import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
 import { parseGlossary } from '../src/db.js';
-import { glossaryBlock } from '../src/prompts.js';
+import { CUSTOMER_TYPES, MOODS, glossaryBlock, roleplaySystemPrompt, voiceDirection } from '../src/prompts.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -152,8 +152,10 @@ globalThis.fetch = async (url, init = {}) => {
           gaps: ['g'],
         },
         record_score: { closed: true, closed_evidence: '「お願いします」', headline: 'h',
-          per_axis: [{ axis: 'A', deduction: 2, evidence: 'e', advice: 'a' }], good: [], next: [] },
+          per_axis: [{ axis: 'A', deduction: 2, evidence: 'e', advice: 'a' }],
+          flags: [{ id: 'heard_out', met: true, evidence: '「最後まで聞きました」' }], good: [], next: [] },
         record_follow_up: { enough: false, reason: 'まだ浅い', questions: ['もう一段の質問'] },
+        say: { reply: 'ちょっと見てるだけです。', mood: 'guarded', flags_met: [] },
       }[name];
       return new Response(JSON.stringify({ content: [{ type: 'tool_use', name, input: payload }] }), { status: 200 });
     }
@@ -407,6 +409,9 @@ check('秘匿: 開始レスポンスに品物を含めない',
 const modesForItem = await (await call('/api/modes')).json();
 check('秘匿: モードはカテゴリだけ返す（品物名は出さない）',
   modesForItem.modes.every((m) => 'product_category' in m && 'has_fixed_product' in m));
+// 一覧に出す実施回数。落とすと画面が「実施undefined回」になる
+check('モード: 実施回数を返す', modesForItem.modes.every((m) => typeof m.run_count === 'number'),
+  JSON.stringify(modesForItem.modes[0]));
 
 // 客役には品物が渡るが、正解額は渡らない
 const customerPrompt = systemText(lastClaude);
@@ -516,6 +521,95 @@ check('移行: 共有トークンは今までどおり通る', (await call('/api
 const legacyMe = await (await call('/api/me')).json();
 check('移行: 共有トークンは管理者扱い', legacyMe.me.role === 'admin' && legacyMe.me.via === 'token');
 check('移行: 共有トークンは会社＝ナレッジ空間', legacyMe.me.company === legacyMe.me.knowledge_space);
+
+/* ======================= 2つのトラックと心境 ========================= */
+
+const tracks = CUSTOMER_TYPES.reduce((acc, t) => ({ ...acc, [t.track]: (acc[t.track] || 0) + 1 }), {});
+check('トラック: 通常と大逆転の2本', tracks.standard === 7 && tracks.reversal === 1, JSON.stringify(tracks));
+check('トラック: 全型に折れる条件が3つある', CUSTOMER_TYPES.every((t) => t.flags?.length === 3));
+check('トラック: 全型に禁じ手がある', CUSTOMER_TYPES.every((t) => t.breaker?.length > 5));
+check('トラック: 条件のidが型の中で重複しない',
+  CUSTOMER_TYPES.every((t) => new Set(t.flags.map((f) => f.id)).size === 3));
+check('トラック: 全型に開始時の心境がある',
+  CUSTOMER_TYPES.every((t) => MOODS.some((m) => m.id === t.opening)));
+check('トラック: 不満客は苛立ちから始まる', CUSTOMER_TYPES.find((t) => t.id === 'complaint').opening === 'irritated');
+check('トラック: 見せに来ただけは乗り気から始まる', CUSTOMER_TYPES.find((t) => t.id === 'showoff').opening === 'engaged');
+
+/* --------- 声が心境で変わる --------- */
+
+const vGuarded = voiceDirection('complaint', 'guarded');
+const vWarm = voiceDirection('complaint', 'warm');
+const vIrritated = voiceDirection('complaint', 'irritated');
+check('声: 心境で読み上げの指示が変わる', vGuarded.instructions !== vWarm.instructions,
+  `${vGuarded.instructions} / ${vWarm.instructions}`);
+check('声: 型の地声は残る',
+  vGuarded.instructions.includes('納得していない客') && vWarm.instructions.includes('納得していない客'));
+check('声: 苛立ちのほうが強く出る', vIrritated.intensity > vWarm.intensity, `${vIrritated.intensity} vs ${vWarm.intensity}`);
+check('声: 強さは0〜2に収める', CUSTOMER_TYPES.every((t) => MOODS.every((m) => {
+  const v = voiceDirection(t.id, m.id);
+  return v.intensity >= 0 && v.intensity <= 2;
+})));
+check('声: 速さも心境で変わる', voiceDirection('silent', 'irritated').speed > voiceDirection('silent', 'guarded').speed);
+check('声: 心境を渡さなければ既定に落ちる', voiceDirection('price').instructions.includes('前のめり'));
+
+/* --------- 状態の持ち回り --------- */
+
+const convo = [
+  { role: 'customer', text: 'a', mood: 'guarded', flags: [] },
+  { role: 'trainee', text: 'b' },
+  { role: 'customer', text: 'c', mood: 'engaged', flags: ['heard_out'] },
+  { role: 'trainee', text: 'd' },
+  { role: 'customer', text: 'e', mood: 'irritated', flags: [] }, // 禁じ手で条件が外れた
+];
+const st = stateOf(convo);
+check('状態: いまの心境は最後の客の発話から取る', st.mood === 'irritated');
+check('状態: いまの条件は最後の状態（外れたら外れたまま）', st.flagsMet.length === 0);
+check('状態: 一度でも立った条件は別に数える', st.everMet.includes('heard_out'), JSON.stringify(st));
+check('状態: 空の履歴でも落ちない', stateOf([]).mood === null && stateOf().everMet.length === 0);
+
+/* --------- 受講者に条件を見せない --------- */
+
+const vis = visibleHistory(convo);
+check('秘匿: 条件の達成状況は返さない', vis.every((m) => m.flags === undefined));
+check('秘匿: 表情は返す（対面なら見えているもの）', vis[2].mood === 'engaged');
+check('秘匿: 発話は落とさない', vis.length === convo.length && vis[4].text === 'e');
+
+const startedTurn = await (await post('/api/runs', { modeId: 'mode1' })).json();
+check('秘匿: 開始レスポンスに条件を含めない',
+  startedTurn.flags === undefined && startedTurn.history.every((m) => m.flags === undefined),
+  JSON.stringify(startedTurn).slice(0, 160));
+check('秘匿: 表情は返る', Boolean(startedTurn.mood && startedTurn.face), JSON.stringify(startedTurn.face));
+// 客役は毎回同じ発話だと練習にならない。temperature が握り潰されていないこと
+check('客役: temperature が Claude まで届く', lastClaude.temperature === 1, JSON.stringify(lastClaude.temperature));
+
+/* --------- 客役プロンプト --------- */
+
+const guardedPrompt = roleplaySystemPrompt({ customerType: 'complaint', mood: 'irritated' });
+check('客役: いまの心境が載る', guardedPrompt.includes('【いまのあなたの心境】') && guardedPrompt.includes('苛立ち'));
+check('客役: 折れる条件が載る', guardedPrompt.includes('【あなたが折れる条件】'));
+check('客役: 未達の条件は未と出る', guardedPrompt.includes('[未] 遮られずに最後まで言えた'));
+const partway = roleplaySystemPrompt({ customerType: 'complaint', mood: 'neutral', flagsMet: ['heard_out'] });
+check('客役: 達成済みは済と出る', partway.includes('[済] 遮られずに最後まで言えた'));
+check('客役: 禁じ手が載る', partway.includes('早々に謝って済ませる'));
+check('客役: 条件を口に出させない', partway.includes('口に出して数えない'));
+check('客役: 大逆転型は売る気がないと明示する',
+  roleplaySystemPrompt({ customerType: 'showoff' }).includes('今日売るつもりがありません'));
+check('客役: 通常型にはその文言を出さない',
+  !roleplaySystemPrompt({ customerType: 'undecided' }).includes('今日売るつもりがありません'));
+
+/* --------- 採点に到達状況が出る --------- */
+
+const labelled = withFlagLabels({ flags: [{ id: 'heard_out', met: true, evidence: '「最後まで」' }] }, 'complaint');
+check('採点: 条件に読める名前が付く', labelled.flags[0].label === '遮られずに最後まで言えた');
+check('採点: 未達の条件も並ぶ（どこで止まったか分かるように）', labelled.flags.length === 3);
+check('採点: 未報告の条件は未達扱い', labelled.flags[1].met === false);
+check('採点: 禁じ手とトラックも返す', labelled.breaker.length > 5 && labelled.track === 'standard');
+check('採点: 条件の無い型でも落ちない', withFlagLabels({}, 'nosuch').flags.length === 0);
+
+const scoredFlags = await (await post('/api/runs/run1/score', {})).json();
+check('採点: 到達状況が返る', Array.isArray(scoredFlags.score?.flags), JSON.stringify(scoredFlags.score?.flags));
+check('採点: 採点プロンプトに到達状況を渡す',
+  JSON.stringify(lastClaude).includes('この客が折れる条件と、会話中の到達状況'));
 
 // --- 障害時 ---
 const prev = globalThis.fetch;

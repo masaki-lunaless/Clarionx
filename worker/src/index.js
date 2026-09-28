@@ -18,6 +18,10 @@ import {
 import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
+  MOODS,
+  moodOf,
+  roleplayTurnRequest,
+  typeOf,
   assessTranscriptRequest,
   criteriaRequest,
   fillQuestionsRequest,
@@ -69,6 +73,29 @@ export function computeTotal(score, item = null) {
       pricePenalty: pricePen,
       maxPricePenalty: item ? PRICE_PENALTY.max : 0,
     },
+  };
+}
+
+/**
+ * 受講者に返してよい履歴。
+ * 表情（mood）は残し、条件の達成状況（flags）は落とす。
+ * 前者は対面なら見えているもの、後者は答えそのもの。
+ */
+export const visibleHistory = (history = []) =>
+  history.map(({ flags, ...rest }) => rest);
+
+/** 採点結果の条件idに、読める名前を付けて返す */
+export function withFlagLabels(score, customerType) {
+  const type = typeOf(customerType);
+  if (!type?.flags?.length) return { ...score, flags: [] };
+  return {
+    ...score,
+    flags: type.flags.map((f) => {
+      const hit = (score.flags || []).find((x) => x.id === f.id);
+      return { id: f.id, label: f.label, hint: f.hint, met: Boolean(hit?.met), evidence: hit?.evidence || '' };
+    }),
+    breaker: type.breaker,
+    track: type.track,
   };
 }
 
@@ -341,7 +368,18 @@ const routes = [
     'GET',
     '/api/config',
     async ({ env, auth }) => ({
-      customerTypes: CUSTOMER_TYPES.map(({ id, label, hint }) => ({ id, label, hint })),
+      customerTypes: CUSTOMER_TYPES.map(({ id, label, hint, track, flags, breaker }) => ({
+        id, label, hint, track,
+        // 条件の「中身」は教材づくりの材料。受講者にも見えるが、
+        // 会話中にどれが立っているかは伏せてある（そちらが答え）
+        flags: flags.map(({ id: fid, label: flabel }) => ({ id: fid, label: flabel })),
+        breaker,
+      })),
+      tracks: [
+        { id: 'standard', label: '通常', hint: '買う／売ると決めに来ている客。条件が揃えば決める' },
+        { id: 'reversal', label: '大逆転', hint: '売る気がない状態から始まる。条件が揃ったときだけ翻る' },
+      ],
+      moods: MOODS.map(({ id, label, face }) => ({ id, label, face })),
       voices: listVoices(env),
       stt: Boolean(env.OPENAI_API_KEY),
       tts: activeProvider(env),
@@ -814,7 +852,7 @@ const routes = [
   /* ----------------------------- 2. ロープレ ---------------------------- */
 
   ['GET', '/api/modes', async ({ env, auth }) => ({
-    modes: (await db.listModes(env, auth.client)).map((m) => modeSummary(m, { admin: auth.admin })),
+    modes: (await db.listModes(env, auth.client, auth.company)).map((m) => modeSummary(m, { admin: auth.admin })),
   })],
 
   [
@@ -894,10 +932,15 @@ const routes = [
       });
       const { dialect } = await db.getGlossary(env, auth.client);
       const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect, item });
-      const history = [{ role: 'customer', text: turn.replyText }];
+      const history = [{ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags }];
       await db.saveRun(env, auth.company, runId, { history });
-      // item は返さない。受講者に正解額が見えたら訓練にならない
-      return { runId, mode: modeSummary(mode), history, hasItem: Boolean(item), ...turn };
+      // item も flags も返さない。正解が見えたら訓練にならない。
+      // 表情（mood）だけは返す。対面なら見えているものなので、音声だけの都合で奪わない
+      return {
+        runId, mode: modeSummary(mode), history: visibleHistory(history),
+        hasItem: Boolean(item), replyText: turn.replyText, audioUrl: turn.audioUrl,
+        mood: turn.mood, face: turn.face,
+      };
     },
   ],
 
@@ -916,9 +959,12 @@ const routes = [
       const history = [...run.history, { role: 'trainee', text }];
       const { dialect } = await db.getGlossary(env, auth.client);
       const turn = await speakAsCustomer(env, mode, history, { dialect, item: run.item });
-      history.push({ role: 'customer', text: turn.replyText });
+      history.push({ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags });
       await db.saveRun(env, auth.company, params.id, { history });
-      return { transcript: text, history, ...turn };
+      return {
+        transcript: text, history: visibleHistory(history),
+        replyText: turn.replyText, audioUrl: turn.audioUrl, mood: turn.mood, face: turn.face,
+      };
     },
   ],
 
@@ -930,16 +976,18 @@ const routes = [
       if (!run.history.length) throw new ApiError(400, '会話がありません');
       const criteria = await db.getCriteria(env, auth.client, run.criteria_id);
       const mode = run.mode_id ? await db.getMode(env, auth.client, run.mode_id).catch(() => null) : null;
+      const state = stateOf(run.history);
       const req = scoringRequest({
         history: run.history,
         criteria: criteria.markdown,
         customerType: mode?.customer_type,
         item: run.item,
+        flagsMet: state.everMet,
       });
       const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000, effort: EFFORT.scoring, label: 'score' });
-      const score = computeTotal(raw, run.item);
+      const score = withFlagLabels(computeTotal(raw, run.item), mode?.customer_type);
       await db.saveRun(env, auth.company, params.id, { score });
-      // 採点が済んだので、ここで初めて品物と正解額を返す
+      // 採点が済んだので、ここで初めて品物・正解額・条件の到達状況を返す
       return { score, item: run.item };
     },
   ],
@@ -1024,6 +1072,7 @@ const modeSummary = (m, { admin = false } = {}) => ({
   voice: m.voice,
   product_category: m.product_category || '',
   has_fixed_product: Boolean(m.product_id),
+  run_count: m.run_count ?? 0,
   ...(admin ? { product_id: m.product_id || '', product_name: m.product_name || '' } : {}),
 });
 
@@ -1055,7 +1104,28 @@ export function stripStageDirections(text) {
   return cleaned || String(text || '').trim();
 }
 
-/** 客役の1発話を作り、読み上げ音声まで用意する */
+/**
+ * 会話の履歴から、いまの心境と達成済みの条件を取り出す。
+ * 条件は禁じ手で外れることがあるので、「最後のターンの状態」を現在地とする。
+ * 一度でも立ったかどうかは everMet で別に数える（採点の材料になる）。
+ */
+export function stateOf(history = []) {
+  const last = [...history].reverse().find((m) => m.role === 'customer');
+  const ever = new Set();
+  for (const m of history) for (const id of m.flags || []) ever.add(id);
+  return {
+    mood: last?.mood || null,
+    flagsMet: last?.flags || [],
+    everMet: [...ever],
+  };
+}
+
+/**
+ * 客役の1発話を作り、読み上げ音声まで用意する。
+ *
+ * セリフと一緒に心境と条件の達成状況を返させ、次のターンと読み上げの演技に渡す。
+ * これが無いと、不満客は20ターン目でも1ターン目と同じ声のままになる。
+ */
 async function speakAsCustomer(env, mode, history, { opening, dialect, item }) {
   const messages = history.map((m) => ({
     role: m.role === 'trainee' ? 'user' : 'assistant',
@@ -1063,29 +1133,52 @@ async function speakAsCustomer(env, mode, history, { opening, dialect, item }) {
   }));
   if (opening) messages.push({ role: 'user', content: '（お客様が来店しました。あなたから最初の一言をどうぞ）' });
 
-  const raw = await generateText(env, {
-    model: MODELS.chat,
-    system: roleplaySystemPrompt({
-      customerType: mode.customer_type,
-      scenario: mode.scenario,
-      criteria: mode.criteria_markdown,
-      dialect,
-      item,
-    }),
-    messages: messages.slice(-40),
-    maxTokens: 400,
-    temperature: 1,
-    effort: EFFORT.chat,
-    cacheSystem: true,
-    label: 'turn',
+  const type = typeOf(mode.customer_type);
+  const state = stateOf(history);
+  const system = roleplaySystemPrompt({
+    customerType: mode.customer_type,
+    scenario: mode.scenario,
+    criteria: mode.criteria_markdown,
+    dialect,
+    item,
+    mood: state.mood || type?.opening,
+    flagsMet: state.flagsMet,
   });
-  const replyText = stripStageDirections(raw);
+
+  let out;
+  try {
+    out = await generateStructured(env, {
+      ...roleplayTurnRequest({ system, messages: messages.slice(-40) }),
+      model: MODELS.chat,
+      maxTokens: 600,
+      temperature: 1,
+      effort: EFFORT.chat,
+      cacheSystem: true,
+      label: 'turn',
+    });
+    // セリフが取れなかったら構造化は失敗扱い。会話を落とすより素のテキストで続ける
+    if (!out?.reply?.trim()) throw new ApiError(502, '客役の発話が空でした');
+  } catch (err) {
+    // 構造化に失敗しても会話は止めない。心境は直前のまま据え置く
+    console.warn('turn: structured failed, falling back', err?.message || err);
+    const raw = await generateText(env, {
+      model: MODELS.chat, system, messages: messages.slice(-40),
+      maxTokens: 400, temperature: 1, effort: EFFORT.chat, cacheSystem: true, label: 'turn',
+    });
+    out = { reply: raw, mood: state.mood, flags_met: state.flagsMet };
+  }
+
+  const replyText = stripStageDirections(out.reply);
+  const known = new Set((type?.flags || []).map((f) => f.id));
+  const flags = (out.flags_met || []).filter((id) => known.has(id));
+  const mood = MOODS.some((m) => m.id === out.mood) ? out.mood : state.mood || type?.opening;
+  const direction = voiceDirection(mode.customer_type, mood);
 
   const audioUrl = await synthesize(env, replyText, {
     voice: mode.voice || undefined,
-    ...voiceDirection(mode.customer_type),
+    ...direction,
   });
-  return { replyText, audioUrl };
+  return { replyText, audioUrl, mood, flags, face: moodOf(mood).face };
 }
 
 /* -------------------------------- ルーター ------------------------------- */

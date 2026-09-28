@@ -374,3 +374,23 @@ tr.is-off { opacity: .45; }
 tr.is-off td { text-decoration: line-through; }
 
 .input-sm { padding: 4px 6px; font-size: .8rem; }
+
+/* ---- 客の表情（対面なら見えているもの） ---- */
+.bubble .face {
+  font-style: normal;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-size: .68rem;
+  color: var(--ink-2);
+}
+
+/* ---- 折れる条件の到達状況（採点後） ---- */
+.flags-card { margin-top: 12px; border-left: 3px solid var(--ok); }
+.flags-card h4 { margin: 0 0 10px; font-size: .85rem; }
+.flags-card .pill { margin-left: 8px; }
+
+#mode-type-detail { margin: -6px 0 12px; font-size: .78rem; }
+#mode-type-detail strong { color: var(--ink); }
