@@ -197,6 +197,12 @@ function resetSituation(mode) {
   if (scen) scen.value = mode.scenario || '';
   const cat = $('#run-category');
   if (cat) cat.value = mode.product_category || '';
+  const diff = $('#run-difficulty');
+  if (diff) {
+    diff.innerHTML = (config.difficulties || [])
+      .map((d) => `<option value="${esc(d.id)}" ${d.id === 'normal' ? 'selected' : ''}>${esc(d.label)}｜${esc(d.hint)}</option>`)
+      .join('');
+  }
   renderRunProducts();
   $('#situation').open = false;
 }
@@ -260,6 +266,7 @@ $('#start-run').addEventListener('click', async (e) => {
       customerType: $('#run-customer')?.value || undefined,
       scenario: $('#run-scenario')?.value,
       category: $('#run-category')?.value || undefined,
+      difficulty: $('#run-difficulty')?.value || undefined,
       productIds: [...pickedForRun],
     }),
   );

@@ -112,6 +112,27 @@ OpenAI TTSの `instructions`、Aivisの `emotional_intensity` と `speaking_rate
 
 構造化に失敗したときは素のテキスト生成に落ちて会話を続ける。心境は直前のまま据え置く。
 
+### 難易度
+
+`DIFFICULTIES`（`prompts.js`）で、折れる条件の必要数と査定額の許容幅を変える。
+
+| | 必要数 | 査定額の許容 | 出だし |
+|---|---|---|---|
+| `easy` | 2 | ±25% | guarded を neutral に落とす |
+| `normal` | 2 | ±15% | 型のまま |
+| `hard` | 3 | ±12% | 型のまま |
+
+`track: 'reversal'` の型だけは常に全条件（`flagsNeeded`）。緩めると型そのものが消える。
+
+「3つ揃ったときだけ折れる」はもともと `showoff` のために現場から出してもらった条件で、
+それを全型に被せたせいで普通の迷い客が大逆転と同じ硬さになっていた。
+あわせて `undecided` の禁じ手から「金額を上げて押す」を外した
+（買取では金額を必ず出すので、条件が揃う前に言うたびにリセットされていた）。
+客役プロンプトにも「査定額を出されること自体は禁じ手ではない」と明記している。
+
+許容幅は `priceFor(product, condition, accessory, tolerance)` で正解レンジ自体を広げる。
+採点時に緩めると、画面に出る「適正◯〜◯」と実際に採点された幅がずれるため。
+
 ### 開始前のシチュエーション差し替え
 
 `POST /api/runs` は `customerType` / `scenario` / `productIds` / `category` を受け、

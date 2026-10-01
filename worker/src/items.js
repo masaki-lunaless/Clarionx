@@ -49,21 +49,22 @@ const roundPrice = (v) => {
  * 品物 × 状態 → その回の正解額。
  * 正解は1点ではなく幅で持つ。現場でも「この辺なら妥当」の幅があるため。
  */
-export function priceFor(product, condition, accessory) {
+export function priceFor(product, condition, accessory, tolerance = 0.12) {
   const base = (Number(product.new_price) || 0) * ((Number(product.retention) || 30) / 100);
   const fair = base * condition.ratio * accessory.ratio;
+  const t = Math.min(0.5, Math.max(0.05, Number(tolerance) || 0.12));
   return {
     fair: roundPrice(fair),
-    low: roundPrice(fair * 0.88),
-    high: roundPrice(fair * 1.12),
+    low: roundPrice(fair * (1 - t)),
+    high: roundPrice(fair * (1 + t)),
   };
 }
 
 /** 実施1回分の品物を組み立てる。ここで決めたものは run に固定して保存する */
-export function drawItem(product) {
+export function drawItem(product, tolerance) {
   const condition = pick(CONDITIONS);
   const accessory = pick(ACCESSORIES);
-  const price = priceFor(product, condition, accessory);
+  const price = priceFor(product, condition, accessory, tolerance);
   return {
     product_id: product.id,
     category: product.category,
@@ -101,7 +102,7 @@ export function totalOf(items = []) {
 }
 
 /** 実施1回分の持ち込み品。複数点を引く */
-export const drawItems = (products = []) => products.map(drawItem);
+export const drawItems = (products = [], tolerance) => products.map((p) => drawItem(p, tolerance));
 
 /**
  * 提示額と正解の距離から減点を出す。

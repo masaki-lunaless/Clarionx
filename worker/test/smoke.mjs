@@ -6,7 +6,7 @@ import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
 import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
 import { parseGlossary } from '../src/db.js';
-import { CUSTOMER_TYPES, MOODS, SCENES, conversationText, glossaryBlock, roleplaySystemPrompt, scoringRequest, voiceDirection } from '../src/prompts.js';
+import { CUSTOMER_TYPES, DIFFICULTIES, MOODS, SCENES, conversationText, flagsNeeded, typeOf, glossaryBlock, roleplaySystemPrompt, scoringRequest, voiceDirection } from '../src/prompts.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -458,6 +458,37 @@ productCount = 0;
 const noneRun = await (await post('/api/runs', { modeId: 'mode1' })).json();
 check('持ち込み: マスタが空なら品物なしで動く', noneRun.itemCount === 0 && noneRun.replyText.length > 0);
 productCount = 1;
+
+/* --------- 難易度 --------- */
+
+// 「3つ揃ったときだけ」は、もともと大逆転型のために現場から出してもらった条件。
+// それを全型に被せた結果、普通の迷い客が大逆転と同じ硬さになっていた。
+check('難易度: ふつうは2つで折れる', flagsNeeded(typeOf('undecided'), 'normal') === 2);
+check('難易度: 本番は3つとも要る', flagsNeeded(typeOf('undecided'), 'hard') === 3);
+check('難易度: 大逆転はやさしくしても3つ揃い',
+  DIFFICULTIES.every((d) => flagsNeeded(typeOf('showoff'), d.id) === 3));
+check('難易度: 知らない指定はふつうに落ちる', flagsNeeded(typeOf('undecided'), 'nosuch') === 2);
+
+const easyPrompt = roleplaySystemPrompt({ customerType: 'undecided', difficulty: 'easy' });
+check('難易度: 必要数をプロンプトに書く', easyPrompt.includes('3つのうち**2つ**が揃ったとき'), easyPrompt.slice(easyPrompt.indexOf('【あなたが折れる条件】'), easyPrompt.indexOf('【あなたが折れる条件】') + 90));
+check('難易度: 本番は3つと書く',
+  roleplaySystemPrompt({ customerType: 'undecided', difficulty: 'hard' }).includes('3つのうち**3つ**'));
+// やさしいときは出だしから硬い客に当てない
+check('難易度: やさしいと出だしが硬くない', easyPrompt.includes('【いまのあなたの心境】\nふつう'), easyPrompt.slice(easyPrompt.indexOf('【いまのあなたの心境】'), easyPrompt.indexOf('【いまのあなたの心境】') + 30));
+check('難易度: ふつう以上は型の既定のまま',
+  roleplaySystemPrompt({ customerType: 'undecided', difficulty: 'normal' }).includes('【いまのあなたの心境】\n硬い'));
+
+// 金額を出すこと自体を禁じ手にしていた。買取では必ず出すので、毎回リセットされていた
+check('禁じ手: 査定額を出すこと自体は禁じ手にしない',
+  easyPrompt.includes('査定額を出されること自体は禁じ手ではありません'));
+check('禁じ手: 迷い客の禁じ手から金額を外した',
+  !typeOf('undecided').breaker.includes('金額'), typeOf('undecided').breaker);
+
+// 査定額の許容幅も難易度で変わる
+const wide = priceFor(rows.product, CONDITIONS[1], ACCESSORIES[1], 0.25);
+const tight = priceFor(rows.product, CONDITIONS[1], ACCESSORIES[1], 0.12);
+check('難易度: やさしいほど査定額の幅が広い', wide.high - wide.low > tight.high - tight.low);
+check('難易度: 中心は変わらない', wide.fair === tight.fair);
 
 /* --------- 開始前にシチュエーションを変える --------- */
 

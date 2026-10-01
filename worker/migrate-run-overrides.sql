@@ -3,3 +3,4 @@
 -- モードを見に行くだけでは足りず、回そのものに持たせる必要がある。
 ALTER TABLE runs ADD COLUMN customer_type TEXT;
 ALTER TABLE runs ADD COLUMN scenario TEXT;
+ALTER TABLE runs ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'normal';

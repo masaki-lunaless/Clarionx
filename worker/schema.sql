@@ -201,3 +201,4 @@ ALTER TABLE runs ADD COLUMN items TEXT;
 -- モードの既定をその回かぎり上書きする。採点も上書き後の客タイプで行う。
 ALTER TABLE runs ADD COLUMN customer_type TEXT;
 ALTER TABLE runs ADD COLUMN scenario TEXT;
+ALTER TABLE runs ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'normal';

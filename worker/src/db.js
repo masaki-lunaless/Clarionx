@@ -306,13 +306,13 @@ export async function createRun(env, client, data) {
   await db(env)
     .prepare(
       `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, items, staff_id, store,
-                         customer_type, scenario, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)`,
+                         customer_type, scenario, difficulty, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, client, data.modeId || null, data.criteriaId || null, data.trainee || '',
       data.items?.length ? JSON.stringify(data.items) : null, data.staffId || '', data.store || '',
-      data.customerType || null, data.scenario || null, t, t,
+      data.customerType || null, data.scenario || null, data.difficulty || 'normal', t, t,
     )
     .run();
   return id;

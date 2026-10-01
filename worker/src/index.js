@@ -18,8 +18,10 @@ import {
 import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
+  DIFFICULTIES,
   MOODS,
   SCENES,
+  difficultyOf,
   moodOf,
   roleplayTurnRequest,
   typeOf,
@@ -384,6 +386,7 @@ const routes = [
         breaker,
       })),
       scenes: Object.entries(SCENES).map(([id, sc]) => ({ id, label: sc.label })),
+      difficulties: DIFFICULTIES.map(({ id, label, hint }) => ({ id, label, hint })),
       tracks: [
         { id: 'standard', label: '通常', hint: '買う／売ると決めに来ている客。条件が揃えば決める' },
         { id: 'reversal', label: '大逆転', hint: '売る気がない状態から始まる。条件が揃ったときだけ翻る' },
@@ -985,10 +988,12 @@ const routes = [
       const customerType = CUSTOMER_TYPES.some((t) => t.id === body.customerType) ? body.customerType : null;
       const scenario = body.scenario === undefined ? null : String(body.scenario).slice(0, 2000);
       const picked = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
+      const difficulty = DIFFICULTIES.some((d) => d.id === body.difficulty) ? body.difficulty : 'normal';
       const effective = {
         ...mode,
         customer_type: customerType || mode.customer_type,
         scenario: scenario === null ? mode.scenario : scenario,
+        difficulty,
       };
 
       // 品物はここで引き、状態と正解額まで固めて run に保存する。
@@ -1002,9 +1007,12 @@ const routes = [
         ? (await db.listProducts(env, auth.client)).filter((p) => picked.includes(p.id))
         : await db.listModeProducts(env, mode.id);
       if (attached.length) {
-        items = drawItems(attached);
+        items = drawItems(attached, difficultyOf(difficulty).tolerance);
       } else if (await db.countProducts(env, auth.client)) {
-        items = drawItems([await db.drawProduct(env, auth.client, { category: body.category || mode.product_category })]);
+        items = drawItems(
+          [await db.drawProduct(env, auth.client, { category: body.category || mode.product_category })],
+          difficultyOf(difficulty).tolerance,
+        );
       }
 
       const runId = await db.createRun(env, auth.company, {
@@ -1017,6 +1025,7 @@ const routes = [
         items,
         customerType,
         scenario,
+        difficulty,
       });
       const { dialect } = await db.getGlossary(env, auth.client);
       const turn = await speakAsCustomer(env, effective, [], { opening: true, dialect, items });
@@ -1041,7 +1050,7 @@ const routes = [
       const stored = await db.getMode(env, auth.client, run.mode_id);
       // 開始前に変えたシチュエーションは、最後まで効かせる
       const mode = { ...stored, customer_type: run.customer_type || stored.customer_type,
-                     scenario: run.scenario ?? stored.scenario };
+                     scenario: run.scenario ?? stored.scenario, difficulty: run.difficulty };
 
       let text = typeof body.text === 'string' ? body.text.trim() : '';
       if (!text) text = await transcribeIfAudio(env, auth.client, body);
@@ -1241,6 +1250,7 @@ async function speakAsCustomer(env, mode, history, { opening, dialect, items }) 
     items,
     mood: state.mood || type?.opening,
     flagsMet: state.flagsMet,
+    difficulty: mode.difficulty,
   });
 
   let out;

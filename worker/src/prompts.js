@@ -24,6 +24,34 @@ export const SCENES = {
 export const sceneOf = (id) => SCENES[id] || SCENES.kaitori;
 
 /**
+ * 難易度。
+ *
+ * 「3つ揃ったときだけ折れる」は、もともと「見せに来ただけ」の大逆転用に
+ * 現場から出してもらった条件だった。それを全型に被せた結果、普通の迷い客が
+ * 大逆転の客と同じ硬さになってしまった。揃える数と査定額の許容幅をここで緩める。
+ *
+ * 大逆転の型だけは、やさしくしても3つ揃いのまま。そこを緩めると型が消える。
+ */
+export const DIFFICULTIES = [
+  { id: 'easy', label: 'やさしい', need: 2, tolerance: 0.25, soften: true,
+    hint: '条件が2つ揃えば決める。査定額の許容も広い' },
+  { id: 'normal', label: 'ふつう', need: 2, tolerance: 0.15, soften: false,
+    hint: '条件が2つ揃えば決める' },
+  { id: 'hard', label: '本番', need: 3, tolerance: 0.12, soften: false,
+    hint: '条件が3つとも揃わないと決めない。査定額も厳しい' },
+];
+
+export const difficultyOf = (id) => DIFFICULTIES.find((d) => d.id === id) || DIFFICULTIES[1];
+
+/** その型・その難易度で、いくつ条件が要るか。大逆転は常に全部 */
+export function flagsNeeded(type, difficulty) {
+  const total = type?.flags?.length || 0;
+  if (!total) return 0;
+  if (type.track === 'reversal') return total;
+  return Math.min(total, difficultyOf(difficulty).need);
+}
+
+/**
  * 客の心境。毎ターンAIに現在地を返させ、次のターンの口調と読み上げの演技に反映する。
  *
  * これが無いと、不満客は20ターン目でも1ターン目と同じ声で苛立ったままになる。
@@ -86,7 +114,7 @@ export const CUSTOMER_TYPES = [
       { id: 'kept_path', label: '売らずに持ち帰った先の話ができた', hint: '持っていても使わない／保管の手間、などが見えた' },
       { id: 'own_reason', label: '今日決めてよい理由を自分で言った', hint: '急かされてではなく、自分の言葉で' },
     ],
-    breaker: '「今日お決めいただければ」と急かす。迷いを聞かずに金額を上げて押す',
+    breaker: '迷っている理由を聞かないまま「今日お決めいただければ」と急かす',
   },
   {
     id: 'price', label: '金額だけで決める', track: 'standard', scene: 'kaitori', opening: 'neutral',
@@ -543,26 +571,31 @@ export function itemBlockForCustomer(items) {
  * 分岐表を書く代わりに「何が揃えば翻るか」だけを決めて、経路は任せている。
  * 条件は一度立っても、breaker に当たれば外れる。大逆転型はそこが肝。
  */
-function flagBlock(type, flagsMet = []) {
+function flagBlock(type, flagsMet = [], difficulty) {
   if (!type?.flags?.length) return '';
+  const need = flagsNeeded(type, difficulty);
   const lines = type.flags
     .map((f) => `- [${flagsMet.includes(f.id) ? '済' : '未'}] ${f.label}（${f.hint}）`)
     .join('\n');
   const reversal = type.track === 'reversal';
+  const total = type.flags.length;
   return `
 
 【あなたが折れる条件】
-${reversal ? 'あなたは今日売るつもりがありません。' : ''}次の3つが揃ったときだけ、${reversal ? '自分から「じゃあ、お願いしようかな」と言い出します' : '売却を決める気になります'}。揃わないうちは決めません。
+${reversal ? 'あなたは今日売るつもりがありません。' : ''}次の${total}つのうち**${need}つ**が揃ったときだけ、${reversal ? '自分から「じゃあ、お願いしようかな」と言い出します' : '売却を決める気になります'}。揃わないうちは決めません。
 ${lines}
 
 - 条件が揃ったかどうかは、あなた自身が心の中で判断します。**口に出して数えない**
 - **${type.breaker}** — これをされたら、揃っていた条件も外れます。むしろ引いてください
-- 条件が1つ増えたら、態度と口調がそのぶん和らぎます。急に全部変わることはありません`;
+- 条件が1つ増えたら、態度と口調がそのぶん和らぎます。急に全部変わることはありません
+- **査定額を出されること自体は禁じ手ではありません。**金額の話になっても、上の条件で判断してください`;
 }
 
-export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, items, mood, flagsMet }) {
+export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, items, mood, flagsMet, difficulty }) {
   const type = typeOf(customerType);
-  const m = moodOf(mood || type?.opening);
+  // やさしいときは、出だしから硬い客に当てない
+  const opening = difficultyOf(difficulty).soften && type?.opening === 'guarded' ? 'neutral' : type?.opening;
+  const m = moodOf(mood || opening);
   const scene = sceneOf(type?.scene);
   return `あなたは接客ロールプレイの「お客様」役です。店員役の相手（研修受講者）と、音声で会話しています。
 
@@ -574,7 +607,7 @@ ${type ? `${type.label}：${type.hint}` : customerType || '一般のお客様'}
 
 【いまのあなたの心境】
 ${m.label}。${m.style}
-この心境は会話の流れで動きます。相手の対応が良ければ和らぎ、悪ければ硬くなります。${flagBlock(type, flagsMet)}
+この心境は会話の流れで動きます。相手の対応が良ければ和らぎ、悪ければ硬くなります。${flagBlock(type, flagsMet, difficulty)}
 ${scenario ? `\n【場面設定】\n${scenario}` : ''}${itemBlockForCustomer(items)}
 
 【話し方のルール】
