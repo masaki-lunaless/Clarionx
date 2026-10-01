@@ -18,6 +18,10 @@ const headers = (extra = {}) => {
 async function handle(res) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // セッション切れは画面全体で1回だけ拾う。呼び出し側それぞれで見張らせない
+    if (res.status === 401) {
+      window.dispatchEvent(new CustomEvent('clarion:unauthorized', { detail: data.error || '' }));
+    }
     const detail = data.detail ? `\n${String(data.detail).slice(0, 300)}` : '';
     throw new ClarionError(`${data.error || `HTTP ${res.status}`}${detail}`);
   }

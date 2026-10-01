@@ -3,25 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Clarion 管理コンソール</title>
+<title>Clarion 制作画面</title>
 <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
     <span class="logo">Clarion</span>
-    <span class="tagline">管理コンソール</span>
+    <span class="tagline">教材をつくる・運用する</span>
   </div>
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-tab="products" role="tab">商品マスタ</button>
-    <button class="tab" data-tab="glossary" role="tab">ブランド・用語</button>
-    <button class="tab" data-tab="staff" role="tab">スタッフ</button>
-    <button class="tab" data-tab="companies" role="tab">会社</button>
+    <button class="tab is-active" data-tab="capture" role="tab" data-requires="capture">① 接客を集める</button>
+    <button class="tab" data-tab="merge" role="tab" data-requires="merge">② 基準をつくる</button>
+    <button class="tab" data-tab="products" role="tab" data-requires="masters">商品マスタ</button>
+    <button class="tab" data-tab="glossary" role="tab" data-requires="masters">ブランド・用語</button>
+    <button class="tab" data-tab="staff" role="tab" data-requires="masters">スタッフ</button>
+    <button class="tab" data-tab="companies" role="tab" data-requires="masters">会社</button>
     <button class="tab" data-tab="account" role="tab">接続</button>
   </nav>
   <div class="who" id="who" hidden>
     <span id="who-name"></span>
-    <a class="btn btn-ghost btn-sm" href="../">練習画面へ</a>
+    <a class="btn btn-ghost btn-sm" href="../">練習画面</a>
     <button class="btn btn-ghost btn-sm" id="logout">ログアウト</button>
   </div>
 </header>
@@ -32,12 +34,108 @@
 </div>
 
 <div class="banner" id="denied-banner" hidden>
-  <span>この画面は管理者だけが使えます。権限のある個人コードでログインし直してください。</span>
+  <span>この画面は指導者以上が使えます。権限のある個人コードでログインし直してください。</span>
 </div>
 
 <main>
-  <!-- 商品マスタ -->
-  <section class="panel is-active" id="panel-products">
+<!-- ① 蓄積 -->
+  <section class="panel is-active" id="panel-capture">
+    <div class="split">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>案件</h2>
+          <button class="btn btn-sm" id="new-case">＋ 新規</button>
+        </div>
+        <ul class="list" id="case-list"></ul>
+      </aside>
+
+      <div class="content">
+        <div class="empty" id="case-empty">
+          <p><strong>実際にあった接客を1件ずつ登録する場所です。</strong></p>
+          <p>接客の書き起こしを貼るか、動画ファイルを読み込むと、AIが「なぜそう言ったのか」を聞く質問を作ります。<br>
+             その回答が、「基準をつくる」でエースの判断基準になります。</p>
+          <button class="btn btn-primary" id="new-case-empty">＋ 最初の案件を作る</button>
+          <p class="status" id="capture-empty-status"></p>
+        </div>
+
+        <div id="case-body" hidden>
+          <div class="field-row">
+            <input class="input title-input" id="case-title" placeholder="案件名（例：10月3日 買取相談）">
+            <button class="btn btn-ghost btn-sm danger" id="delete-case">削除</button>
+          </div>
+          <div class="field-row">
+            <input class="input" id="case-ace" placeholder="誰の接客か（例：田中店長）">
+            <input class="input" id="case-date" type="date">
+          </div>
+          <input class="input" id="case-context" placeholder="前提（店舗・商材・状況など）">
+
+          <details class="block" open>
+            <summary>書き起こし</summary>
+            <textarea class="input textarea-lg" id="case-transcript" placeholder="接客の書き起こしを貼り付け"></textarea>
+            <div class="row">
+              <label class="btn btn-ghost btn-sm file-btn">
+                動画・音声ファイルを読み込む（複数可）
+                <input type="file" id="audio-file" accept="audio/*,video/*" multiple hidden>
+              </label>
+              <span class="hint">MP4などの動画をそのまま読み込めます。<strong>分割された録音は複数まとめて選べます</strong>（ファイル名順に処理して1つの書き起こしにまとめます）。ブラウザ内で音声だけを取り出し、無音を詰めて10分ずつに分けて書き起こします。<strong>音声は書き起こし後に破棄され、保存されません。</strong>数十時間をまとめて処理する場合は <code>tools/extract-audio.sh</code> を使ってください。</span>
+            </div>
+          </details>
+
+          <div class="row row-actions">
+            <button class="btn" id="format-btn">話者を分けて整える</button>
+            <button class="btn" id="assess-btn">素材として使えるか見る</button>
+            <button class="btn btn-primary" id="detect-btn">転換点を検出して質問を作る</button>
+            <span class="status" id="capture-status"></span>
+          </div>
+          <p class="hint">書き起こしに「店員：」「客：」が付いていないと、転換点の検出精度が落ちます。先に整えてください。</p>
+
+          <div id="extract-report"></div>
+          <div id="assessment"></div>
+          <div id="turning-points"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ③ 統合 -->
+  <section class="panel" id="panel-merge">
+    <div class="split">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>案件を選ぶ</h2>
+          <button class="btn btn-sm" id="merge-toggle-all">全選択</button>
+        </div>
+        <ul class="list" id="merge-case-list"></ul>
+        <div class="sidebar-foot">
+          <label class="label">補足メモ
+            <input class="input" id="merge-notes" placeholder="統合時に意識してほしいこと">
+          </label>
+          <label class="check">
+            <input type="checkbox" id="use-feedback" checked>
+            <span>ロープレのフィードバックを反映する</span>
+          </label>
+          <button class="btn btn-primary" id="merge-btn">選んだ案件を判断基準に統合する</button>
+          <p class="status" id="merge-status"></p>
+        </div>
+      </aside>
+
+      <div class="content">
+        <div class="field-row">
+          <select class="input" id="criteria-select"></select>
+          <button class="btn btn-ghost btn-sm" id="criteria-download">.md保存</button>
+          <button class="btn btn-ghost btn-sm danger" id="criteria-delete">削除</button>
+        </div>
+        <div class="row row-actions">
+          <button class="btn btn-sm" id="create-mode-from">この判断基準からロープレモードを作る</button>
+        </div>
+        <div id="criteria-feedback"></div>
+        <textarea class="input textarea-doc" id="criteria-doc" placeholder="統合した判断基準がここに出ます。編集すると自動保存されます。"></textarea>
+      </div>
+    </div>
+  </section>
+
+    <!-- 商品マスタ -->
+  <section class="panel" id="panel-products">
     <div class="content">
       <h2>商品マスタ</h2>
       <p class="hint">
@@ -215,6 +313,30 @@
         <span class="status" id="login-status"></span>
       </div>
 
+
+      <hr>
+      <h2>取り込みの調整</h2>
+      <p class="hint">音声ファイルを読み込むときの処理です。既定のままで大半は動きます。素材に合わない場合だけ触ってください。</p>
+      <div class="fb-grid">
+        <label class="label">ハイパス カットオフ（Hz）
+          <input class="input" id="hp-cutoff" type="number" min="0" max="1000" step="10">
+        </label>
+        <label class="label">増幅の上限（倍）
+          <input class="input" id="max-gain" type="number" min="1" max="200" step="1">
+        </label>
+        <label class="label">無音判定の強さ（暗騒音の何倍を声とみなすか）
+          <input class="input" id="silence-factor" type="number" min="1" max="20" step="0.5">
+        </label>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="trim-enabled" checked>
+        <span>無音を詰める（切ると、元の長さのまま送ります）</span>
+      </label>
+      <label class="label">固有名詞ヒント（書き起こし精度の向上・任意）
+        <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
+      </label>
+
+      <hr>
       <details class="block">
         <summary>共有トークンで入る（従来の方法）</summary>
         <p class="hint">会社をまだ1つも作っていない段階では、こちらで入って会社とスタッフを登録します。この入口の管理者だけは、どの会社のスタッフも操作できます。</p>
@@ -229,6 +351,39 @@
     </div>
   </section>
 </main>
+
+<dialog id="mode-dialog">
+  <form method="dialog">
+    <h2>ロープレモードを作る</h2>
+    <label class="label">モード名
+      <input class="input" id="mode-name" placeholder="例：田中店長の基準 × 不満客">
+    </label>
+    <label class="label">判断基準
+      <select class="input" id="mode-criteria"></select>
+    </label>
+    <label class="label">客タイプ
+      <select class="input" id="mode-customer"></select>
+    </label>
+    <div id="mode-type-detail" class="breakdown"></div>
+    <label class="label">場面設定
+      <textarea class="input" id="mode-scenario" rows="3" placeholder="例：閉店30分前。母から譲られたバッグの買取相談。他店で3万円と言われている。"></textarea>
+    </label>
+    <label class="label">客の声
+      <select class="input" id="mode-voice"></select>
+    </label>
+    <label class="label">持ち込む品物のカテゴリ
+      <select class="input" id="mode-category"></select>
+    </label>
+    <label class="label">品物を固定する（任意）
+      <select class="input" id="mode-product"></select>
+    </label>
+    <p class="hint">固定しなければ、選んだカテゴリの中から実施ごとにランダムで選ばれます。<strong>どちらの場合も、受講者には採点まで品物が見えません。</strong>モード名に品物名を入れると意味が無くなるので注意してください。</p>
+    <div class="row row-end">
+      <button class="btn btn-ghost" value="cancel">キャンセル</button>
+      <button class="btn btn-primary" value="ok">作る</button>
+    </div>
+  </form>
+</dialog>
 
 <script type="module" src="admin.js"></script>
 </body>

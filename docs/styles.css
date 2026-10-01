@@ -55,7 +55,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   padding: max(env(safe-area-inset-top), 10px) 16px 0;
+  /* 1段目に名前と所属、2段目にタブ。名前は右端へ寄せる */
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 16px;
 }
+.topbar .brand { grid-column: 1; grid-row: 1; }
+.topbar .who   { grid-column: 2; grid-row: 1; }
+.topbar .tabs  { grid-column: 1 / -1; grid-row: 2; }
 
 .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .logo { font-size: 1.2rem; font-weight: 700; letter-spacing: .06em; color: var(--accent); }
@@ -353,10 +361,15 @@ table.records tr.detail-row > td { white-space: normal; background: var(--surfac
 .who {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 8px;
+  justify-content: flex-end;
+  gap: 8px;
   font-size: .82rem;
   color: var(--ink-2);
+}
+@media (max-width: 560px) {
+  .topbar { grid-template-columns: 1fr; }
+  .topbar .who { grid-column: 1; grid-row: 2; justify-content: flex-start; margin-top: 6px; }
+  .topbar .tabs { grid-row: 3; }
 }
 .who #who-name { font-weight: 600; color: var(--ink); }
 
@@ -394,3 +407,31 @@ tr.is-off td { text-decoration: line-through; }
 
 #mode-type-detail { margin: -6px 0 12px; font-size: .78rem; }
 #mode-type-detail strong { color: var(--ink); }
+
+/* ---- ログイン画面（入るまではこれだけ） ---- */
+.gate {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--bg);
+}
+.gate-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.gate-head { margin-bottom: 20px; }
+.gate-head .logo { font-size: 1.5rem; }
+.gate-head p { margin: 2px 0 0; color: var(--ink-2); font-size: .85rem; }
+.gate-card .fb-grid { gap: 0 12px; }
+.gate-card .status { display: block; margin: 8px 0 0; }
+.gate-card .hint { margin-top: 14px; }
+.gate-card details { margin-top: 18px; }
+
+.btn-wide { width: 100%; justify-content: center; }

@@ -8,20 +8,29 @@
 // 片方でログインすれば、もう片方も入れる。
 
 import { api } from '../api.js';
+import { DEFAULTS, canExtract, extractChunks, fmtDuration } from '../media.js';
 import { settings } from '../store.js';
-import { $, $$, esc, run, status } from '../ui.js';
+import { $, $$, debounce, esc, run, status } from '../ui.js';
 
-let config = { roles: [], conditions: [], accessories: [] };
+// 制作画面。教材をつくる側（①接客を集める／②基準をつくる）と、
+// 運用（商品・用語・スタッフ・会社）をここに集めてある。
+// 練習する人が見るのは ../ のほうで、この画面の中身は出ない。
+let config = { roles: [], conditions: [], accessories: [], customerTypes: [], voices: [], feedbackOptions: { realism: [], scoring: [] } };
 let me = null;
 let products = [];
 let staffList = [];
 let staffCompany = '';
+let cases = [];
+let criteriaList = [];
+let modes = [];
+let current = { caseId: null, case: null, criteriaId: null };
 
 /* ---------------------------------- タブ --------------------------------- */
 
-function activateTab(name) {
+async function activateTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${name}`));
+  if (name === 'merge') await refreshMerge();
 }
 $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
 $('#go-account').addEventListener('click', () => activateTab('account'));
@@ -44,8 +53,8 @@ async function afterConnect(cfg, el) {
   me = cfg.me;
   setConnected(true);
 
-  // 管理者以外はここに用がない。何も読まずに理由だけ出す
-  const denied = !me?.can?.masters;
+  // 指導者以上でないとこの画面に用がない。何も読まずに理由だけ出す
+  const denied = !me?.can?.capture;
   $('#denied-banner').hidden = !denied;
   $('#who').hidden = false;
   const roleLabel = (config.roles || []).find((r) => r.id === me?.role)?.label || '';
@@ -53,18 +62,31 @@ async function afterConnect(cfg, el) {
     ? `${me.company_name}／${me.staff_name}（${roleLabel}）`
     : `${me.company_name}（共有トークン）`;
   if (denied) {
-    status(el, `${roleLabel}では管理コンソールを使えません`, 'error');
+    status(el, `${roleLabel}では制作画面を使えません`, 'error');
+    for (const t of $$('.tab[data-requires]')) t.hidden = true;
     return;
   }
 
+  // 権限で触れないタブは出さない。実際の制限はWorker側でかけている
+  for (const t of $$('[data-requires]')) t.hidden = !me.can[t.dataset.requires];
+
   status(el, `接続OK — ${me.company_name} / ナレッジ空間 ${me.knowledge_space}`, 'ok');
-  fillSelect($('#staff-role'), config.roles.map((r) => ({ value: r.id, label: r.label })));
-  fillSelect($('#calc-condition'), config.conditions.map((c) => ({ value: c.id, label: `${c.label}（${c.desc}）` })));
-  fillSelect($('#calc-accessory'), config.accessories.map((a) => ({ value: a.id, label: a.label })));
-  await loadGlossary();
-  await loadProducts();
-  await loadCompanies();
-  await loadStaff();
+  fillSelect($('#staff-role'), (config.roles || []).map((r) => ({ value: r.id, label: r.label })));
+  fillSelect($('#calc-condition'), (config.conditions || []).map((c) => ({ value: c.id, label: `${c.label}（${c.desc}）` })));
+  fillSelect($('#calc-accessory'), (config.accessories || []).map((a) => ({ value: a.id, label: a.label })));
+  fillTypeGroups($('#mode-customer'), config.customerTypes, config.tracks);
+  fillSelect($('#mode-voice'), [{ value: '', label: 'Worker既定の声' }, ...(config.voices || []).map((v) => ({ value: v.id, label: v.name }))]);
+
+  await Promise.all([refreshCases(), refreshCriteria(), refreshModes()]);
+  if (me.can.masters) {
+    await loadGlossary();
+    await loadProducts();
+    await loadCompanies();
+    await loadStaff();
+  }
+  // 触れる一番手前のタブを開く
+  const first = $$('.tab').find((t) => !t.hidden);
+  if (first) await activateTab(first.dataset.tab);
 }
 
 const fillSelect = (el, options, selected) => {
@@ -105,6 +127,632 @@ $('#logout').addEventListener('click', async () => {
   setConnected(false, 'ログアウトしました。もう一度ログインしてください。');
   activateTab('account');
 });
+
+/* -------------------------------- ① 蓄積 -------------------------------- */
+
+async function refreshCases() {
+  const data = await api.listCases().catch(() => null);
+  if (!data) return;
+  cases = data.cases;
+  renderCaseList();
+  renderMergeCaseList();
+}
+
+const DENSITY = { high: '濃い', medium: 'ふつう', low: '薄い' };
+
+/** 素材の濃さ。50時間の録画から、聞く価値のある回を選ぶための目印 */
+function densityBadge(raw) {
+  try {
+    const a = JSON.parse(raw || 'null');
+    if (!a?.density) return '';
+    return `<span class="density ${a.density}">${DENSITY[a.density]}</span> `;
+  } catch {
+    return '';
+  }
+}
+
+function renderCaseList() {
+  $('#case-list').innerHTML = cases
+    .map(
+      (c) => `<li><button class="item ${c.id === current.caseId ? 'is-active' : ''}" data-id="${c.id}">
+        <span class="item-name">${esc(c.title)}</span>
+        <span class="item-meta">${densityBadge(c.assessment)}${esc(c.ace_name || '担当者未記入')}・${c.q_total ? `${c.q_answered}/${c.q_total} 回答` : '未検出'}</span>
+      </button></li>`,
+    )
+    .join('');
+}
+
+$('#case-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.item');
+  if (btn) await openCase(btn.dataset.id);
+});
+
+async function openCase(id) {
+  const data = await api.getCase(id).catch(() => null);
+  if (!data) return;
+  current.caseId = id;
+  current.case = data.case;
+  renderCaseList();
+  renderCase();
+}
+
+function renderAssessment(raw) {
+  const box = $('#assessment');
+  if (!box) return;
+  let a = null;
+  try { a = JSON.parse(raw || 'null'); } catch { a = null; }
+  if (!a?.density) {
+    box.innerHTML = '';
+    return;
+  }
+  const list = (items) => (items || []).map((x) => `<li>${esc(x)}</li>`).join('') || '<li>—</li>';
+  box.innerHTML = `<div class="card">
+    <div class="card-head"><span class="density ${a.density}">素材の濃さ：${DENSITY[a.density]}</span></div>
+    <p class="why">${esc(a.reason)}</p>
+    <div class="assess-cols">
+      <div><h4>含まれている場面</h4><ul>${list(a.covered)}</ul></div>
+      <div><h4>欠けている場面</h4><ul>${list(a.missing)}</ul></div>
+    </div>
+  </div>`;
+}
+
+function renderCase() {
+  const c = current.case;
+  $('#case-empty').hidden = Boolean(c);
+  $('#case-body').hidden = !c;
+  if (!c) return;
+  $('#case-title').value = c.title || '';
+  $('#case-ace').value = c.ace_name || '';
+  $('#case-date').value = c.occurred_on || '';
+  $('#case-context').value = c.context || '';
+  $('#case-transcript').value = c.transcript || '';
+  renderAssessment(c.assessment);
+  renderTurningPoints();
+}
+
+async function createCase() {
+  // 案件が無いときは #capture-status が隠れているので、空画面側に出す
+  const statusEl = current.case ? $('#capture-status') : $('#capture-empty-status');
+  const data = await run(null, statusEl, '作成中…', () =>
+    api.createCase({ title: `案件 ${cases.length + 1}`, transcript: '' }),
+  );
+  if (!data) return;
+  await refreshCases();
+  await openCase(data.case.id);
+  $('#case-title').select();
+}
+
+$('#new-case').addEventListener('click', createCase);
+$('#new-case-empty')?.addEventListener('click', createCase);
+
+$('#delete-case').addEventListener('click', async () => {
+  if (!confirm(`「${current.case.title}」を削除します。転換点と回答も消えます。よろしいですか？`)) return;
+  if (!(await run(null, $('#capture-status'), '削除中…', () => api.deleteCase(current.caseId)))) return;
+  current.caseId = null;
+  current.case = null;
+  await refreshCases();
+  renderCase();
+});
+
+const saveCaseField = debounce(async (field, value) => {
+  if (!current.caseId) return;
+  await api.updateCase(current.caseId, { [field]: value }).catch(() => {});
+  const row = cases.find((c) => c.id === current.caseId);
+  if (row) {
+    if (field === 'title') row.title = value;
+    if (field === 'aceName') row.ace_name = value;
+    renderCaseList();
+  }
+});
+
+const bindCaseField = (sel, field) => {
+  const el = $(sel);
+  const save = () => saveCaseField(field, el.value);
+  el.addEventListener('input', save);
+  el.addEventListener('change', () => {
+    if (current.case) current.case[field === 'aceName' ? 'ace_name' : field === 'occurredOn' ? 'occurred_on' : field] = el.value;
+    save();
+  });
+};
+bindCaseField('#case-title', 'title');
+bindCaseField('#case-ace', 'aceName');
+bindCaseField('#case-date', 'occurredOn');
+bindCaseField('#case-context', 'context');
+bindCaseField('#case-transcript', 'transcript');
+
+let lastExtract = null;
+
+/** 取り込んだ音声の測定値と、処理後の音声そのものを出す。耳で原因を判断できるように */
+function renderExtractReport(file, extracted, note) {
+  const box = $('#extract-report');
+  if (!box) return;
+  const d = extracted?.diagnostics || {};
+  box.insertAdjacentHTML('beforeend', `<div class="card">
+    <div class="card-head"><h3>取り込みの結果：${esc(file.name)}</h3></div>
+    ${note ? `<p class="why">${esc(note)}</p>` : ''}
+    <div class="diag">${Object.entries(d)
+      .map(([k, v]) => `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`)
+      .join('')}</div>
+    <p class="hint">下がWhisperに送っている音声そのものです。聞こえ方を確認してください。</p>
+    <div class="chunk-players" id="chunk-players"></div>
+    ${extracted ? '<div class="row row-end"><button class="btn btn-ghost btn-sm" id="dl-chunks">処理後の音声を保存</button></div>' : ''}
+  </div>`);
+  if (!extracted) return;
+  const players = $('#chunk-players');
+  extracted.chunks.slice(0, 3).forEach((c, i) => {
+    const el = document.createElement('audio');
+    el.controls = true;
+    el.src = URL.createObjectURL(c);
+    el.title = `${i + 1}個目`;
+    players.append(el);
+  });
+  $('#dl-chunks').addEventListener('click', () => {
+    extracted.chunks.forEach((c, i) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(c);
+      a.download = `${file.name.replace(/\.[^.]+$/, '')}_part${i + 1}.wav`;
+      a.click();
+    });
+  });
+}
+
+/**
+ * 1ファイルを取り込む。抽出 → 分割 → 順に書き起こして案件へ追記。
+ * 分割録音を複数まとめて入れられるよう、1ファイル分を関数にしてある。
+ */
+async function importOneFile(file, el, prefix) {
+  let extracted;
+  try {
+    extracted = await extractChunks(file, {
+      onProgress: (msg) => status(el, `${prefix}${file.name}：${msg}`),
+      ...extractOptions(),
+    });
+  } catch (err) {
+    renderExtractReport(file, null, err.message);
+    return { ok: false, error: err.message };
+  }
+
+  renderExtractReport(file, extracted);
+  const { chunks, seconds, originalSeconds, gain } = extracted;
+  const trimmed = originalSeconds - seconds;
+  const note =
+    (trimmed > 30 ? `（無音 ${fmtDuration(trimmed)} を除去` : '（') +
+    (gain > 1.05 ? `${trimmed > 30 ? '／' : ''}音量を${gain.toFixed(1)}倍に調整` : '') +
+    '）';
+
+  for (const [i, chunk] of chunks.entries()) {
+    status(el, `${prefix}${file.name}：書き起こし中… ${i + 1}/${chunks.length} 個目 ${note}`);
+    try {
+      const data = await api.transcribe(current.caseId, chunk, { vocabulary: settings.get('vocabulary') }, `part${i + 1}.wav`);
+      current.case = data.case;
+      $('#case-transcript').value = data.case.transcript;
+    } catch (err) {
+      renderExtractReport(file, extracted, '送った音声は下で再生できます。話し声が聞き取れない場合は、録音そのものに声が入っていないか、音量が足りていません。');
+      return { ok: false, error: `${i + 1}個目で失敗：${err.message}`, partial: i };
+    }
+  }
+  return { ok: true, seconds, chunks: chunks.length };
+}
+
+$('#audio-file').addEventListener('change', async (e) => {
+  // 録音が分割されている場合に備え、複数まとめて受ける。
+  // 順番が狂うと会話が入れ替わるので、ファイル名を自然順（part2 < part10）に並べる。
+  const files = [...(e.target.files || [])].sort((a, b) =>
+    a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }),
+  );
+  e.target.value = '';
+  if (!files.length || !current.caseId) return;
+  const el = $('#capture-status');
+
+  if (!canExtract()) {
+    status(el, 'このブラウザでは動画から音声を取り出せません。tools/extract-audio.sh で変換してから読み込んでください', 'error');
+    return;
+  }
+
+  $('#extract-report').innerHTML = '';
+  if (files.length > 1) {
+    status(el, `${files.length}ファイルを順に取り込みます：${files.map((f) => f.name).join(' → ')}`);
+  }
+
+  const done = [];
+  const failed = [];
+  for (const [i, file] of files.entries()) {
+    const prefix = files.length > 1 ? `${i + 1}/${files.length} ` : '';
+    const res = await importOneFile(file, el, prefix);
+    (res.ok ? done : failed).push({ file, res });
+    // 分割録音は順番に意味があるため、途中で失敗したら止めて知らせる
+    if (!res.ok) break;
+  }
+
+  if (failed.length) {
+    const f = failed[0];
+    status(el, `${f.file.name} で中断しました：${f.res.error}（${done.length}ファイル分は保存済み）`, 'error');
+    return;
+  }
+  const total = done.reduce((n, d) => n + d.res.seconds, 0);
+  status(
+    el,
+    `完了：${done.length}ファイル・合計${fmtDuration(total)}を書き起こしました`,
+    'ok',
+  );
+});
+
+$('#format-btn').addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
+    return;
+  }
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '話者を判定して整えています…（30秒ほどかかります）', () => api.format(current.caseId));
+  if (!data) return;
+  current.case = data.case;
+  $('#case-transcript').value = data.case.transcript;
+  status(el, '整えました。内容を確認してから転換点を検出してください', 'ok');
+});
+
+$('#assess-btn')?.addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
+    return;
+  }
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '素材として使えるか見ています…', () => api.assess(current.caseId));
+  if (!data) return;
+  current.case.assessment = JSON.stringify(data.assessment);
+  renderAssessment(current.case.assessment);
+  await refreshCases();
+  if (data.assessment.density === 'low') {
+    status(el, '判断の場面が薄い録音です。転換点を検出しても浅い結果になります', 'error');
+  }
+});
+
+$('#detect-btn').addEventListener('click', async (e) => {
+  const el = $('#capture-status');
+  if (!$('#case-transcript').value.trim()) {
+    status(el, '書き起こしを入れてください', 'error');
+    return;
+  }
+  // 未保存の編集を確定させてから検出する
+  await api.updateCase(current.caseId, { transcript: $('#case-transcript').value }).catch(() => {});
+  const data = await run(e.target, el, '転換点を検出中…（30秒ほどかかります）', () => api.detect(current.caseId));
+  if (!data) return;
+  current.case = data.case;
+  renderTurningPoints();
+  await refreshCases();
+});
+
+function renderTurningPoints() {
+  const tps = current.case?.turningPoints || [];
+  $('#turning-points').innerHTML = tps
+    .map(
+      (tp, i) => `
+    <article class="card">
+      <header class="card-head"><span class="badge">転換点 ${i + 1}</span><h3>${esc(tp.label)}</h3></header>
+      <blockquote>${esc(tp.quote)}</blockquote>
+      <p class="why">${esc(tp.why)}</p>
+      ${tp.questions
+        .map(
+          (q) => `<div class="qa">
+            <p class="question">${esc(q.question)}</p>
+            <textarea class="input answer" data-q="${q.id}" rows="3" placeholder="本人の回答をそのまま書き取る">${esc(q.answer || '')}</textarea>
+            <div class="row row-end">
+              <span class="status inline" data-status="${q.id}"></span>
+              <button class="btn btn-ghost btn-sm dig" data-q="${q.id}" data-quote="${esc(tp.quote)}">もう一段掘る</button>
+            </div>
+          </div>`,
+        )
+        .join('')}
+    </article>`,
+    )
+    .join('');
+}
+
+const saveAnswer = debounce(async (id, value) => {
+  await api.saveAnswer(id, value).catch(() => {});
+  await refreshCases();
+});
+
+$('#turning-points').addEventListener('input', (e) => {
+  const ta = e.target.closest('textarea.answer');
+  if (ta) saveAnswer(ta.dataset.q, ta.value);
+});
+
+$('#turning-points').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.dig');
+  if (!btn) return;
+  const id = btn.dataset.q;
+  const statusEl = $(`[data-status="${id}"]`);
+  const ta = $(`textarea.answer[data-q="${id}"]`);
+  const question = ta.closest('.qa').querySelector('.question').textContent;
+  if (!ta.value.trim()) {
+    status(statusEl, '先に回答を書いてください', 'error');
+    return;
+  }
+  const out = await run(btn, statusEl, '追加質問を作成中…', () =>
+    api.followUp(id, { question, answer: ta.value.trim(), quote: btn.dataset.quote }),
+  );
+  if (!out) return;
+  if (out.enough) {
+    status(statusEl, `十分に言語化できています（${out.reason}）`, 'ok');
+    return;
+  }
+  await openCase(current.caseId);
+});
+
+/* -------------------------------- ③ 統合 -------------------------------- */
+
+let mergeSelection = new Set();
+
+async function refreshMerge() {
+  await Promise.all([refreshCases(), refreshCriteria()]);
+}
+
+async function refreshCriteria() {
+  const data = await api.listCriteria().catch(() => null);
+  if (!data) return;
+  criteriaList = data.criteria;
+  renderCriteriaSelect();
+}
+
+function renderMergeCaseList() {
+  const usable = cases.filter((c) => c.q_answered > 0);
+  $('#merge-case-list').innerHTML = usable.length
+    ? usable
+        .map(
+          (c) => `<li><label class="check-item">
+            <input type="checkbox" data-case="${c.id}" ${mergeSelection.has(c.id) ? 'checked' : ''}>
+            <span><span class="item-name">${esc(c.title)}</span>
+            <span class="item-meta">${esc(c.ace_name || '担当者未記入')}・回答${c.q_answered}件</span></span>
+          </label></li>`,
+        )
+        .join('')
+    : '<li class="empty-note">①で回答を書き込んだ案件がここに出ます</li>';
+}
+
+$('#merge-case-list').addEventListener('change', (e) => {
+  const cb = e.target.closest('input[data-case]');
+  if (!cb) return;
+  cb.checked ? mergeSelection.add(cb.dataset.case) : mergeSelection.delete(cb.dataset.case);
+});
+
+$('#merge-toggle-all').addEventListener('click', () => {
+  const usable = cases.filter((c) => c.q_answered > 0);
+  mergeSelection = usable.every((c) => mergeSelection.has(c.id)) ? new Set() : new Set(usable.map((c) => c.id));
+  renderMergeCaseList();
+});
+
+$('#merge-btn').addEventListener('click', async (e) => {
+  const el = $('#merge-status');
+  if (!mergeSelection.size) {
+    status(el, '案件を1件以上選んでください', 'error');
+    return;
+  }
+  const feedbackCriteriaIds = $('#use-feedback').checked ? criteriaList.map((c) => c.id) : [];
+  const out = await run(e.target, el, `${mergeSelection.size}件を統合中…（1分ほどかかります）`, () =>
+    api.mergeCriteria({ caseIds: [...mergeSelection], notes: $('#merge-notes').value, feedbackCriteriaIds }),
+  );
+  if (!out) return;
+  status(el, out.usedFeedback ? `統合しました（フィードバック${out.usedFeedback}件を反映）` : '統合しました', 'ok');
+  await refreshCriteria();
+  current.criteriaId = out.criteria.id;
+  renderCriteriaSelect();
+  await showCriteria(out.criteria.id);
+});
+
+function renderCriteriaSelect() {
+  const sel = $('#criteria-select');
+  sel.innerHTML = criteriaList.length
+    ? criteriaList
+        .map(
+          (c) => `<option value="${c.id}" ${c.id === current.criteriaId ? 'selected' : ''}>${esc(c.title)}（案件${c.source_case_ids.length}件／実施${c.run_count}回）</option>`,
+        )
+        .join('')
+    : '<option value="">まだありません</option>';
+  const modeSel = $('#mode-criteria');
+  modeSel.innerHTML = criteriaList.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join('');
+}
+
+$('#criteria-select').addEventListener('change', (e) => e.target.value && showCriteria(e.target.value));
+
+async function showCriteria(id) {
+  const data = await api.getCriteria(id).catch(() => null);
+  if (!data) return;
+  current.criteriaId = id;
+  $('#criteria-doc').value = data.criteria.markdown;
+  const fb = await api.criteriaFeedback(id).catch(() => ({ feedback: [] }));
+  renderCriteriaFeedback(fb.feedback);
+}
+
+function renderCriteriaFeedback(list) {
+  const box = $('#criteria-feedback');
+  if (!list.length) {
+    box.innerHTML = '';
+    return;
+  }
+  const label = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value === v)?.label || '未評価';
+  box.innerHTML = `<div class="card fb-list">
+    <h4>この判断基準へのフィードバック（${list.length}件）</h4>
+    <p class="hint">次の統合で、これらが判断基準の書き直しに反映されます。</p>
+    ${list
+      .map(
+        (f) => `<div class="fb-row">
+          <span class="item-meta">${esc(f.mode_name || 'モード不明')}・客:${esc(label('realism', f.fb_realism))}・採点:${esc(label('scoring', f.fb_scoring))}</span>
+          ${f.fb_note ? `<p>${esc(f.fb_note)}</p>` : ''}
+        </div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
+$('#criteria-doc').addEventListener(
+  'input',
+  debounce((e) => {
+    if (current.criteriaId) api.updateCriteria(current.criteriaId, e.target.value).catch(() => {});
+  }),
+);
+
+$('#criteria-download').addEventListener('click', () => {
+  const c = criteriaList.find((x) => x.id === current.criteriaId);
+  if (!c) return;
+  const url = URL.createObjectURL(new Blob([$('#criteria-doc').value], { type: 'text/markdown;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${c.title}.md`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+$('#criteria-delete').addEventListener('click', async () => {
+  const c = criteriaList.find((x) => x.id === current.criteriaId);
+  if (!c || !confirm(`「${c.title}」を削除します。紐づくロープレモードも消えます。よろしいですか？`)) return;
+  if (!(await run(null, $('#merge-status'), '削除中…', () => api.deleteCriteria(c.id)))) return;
+  current.criteriaId = null;
+  $('#criteria-doc').value = '';
+  $('#criteria-feedback').innerHTML = '';
+  await refreshCriteria();
+});
+
+$('#create-mode-from').addEventListener('click', () => openModeDialog(current.criteriaId));
+
+/* ----------------------------- モード作成ダイアログ ---------------------- */
+
+async function openModeDialog(criteriaId) {
+  if (!criteriaList.length) {
+    alert('先に③で判断基準を統合してください。');
+    return;
+  }
+  if (criteriaId) $('#mode-criteria').value = criteriaId;
+  $('#mode-name').value = '';
+  $('#mode-scenario').value = '';
+  await fillProductPickers();
+  renderTypeDetail();
+  $('#mode-dialog').showModal();
+}
+
+/**
+ * 品物の選び方を用意する。
+ * カテゴリだけ決めれば実施ごとにランダム、品物まで決めれば毎回同じものになる。
+ * 同じ品物で複数人を比べたいときだけ固定する。
+ */
+async function fillProductPickers() {
+  const catSel = $('#mode-category');
+  const prodSel = $('#mode-product');
+  if (!catSel || !prodSel) return;
+  const data = await api.listProducts().catch(() => null);
+  const products = data?.products || [];
+  const categories = data?.categories || [];
+  catSel.innerHTML = [`<option value="">すべてのカテゴリから</option>`, ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+
+  const renderProducts = () => {
+    const cat = catSel.value;
+    const pool = cat ? products.filter((p) => p.category === cat) : products;
+    prodSel.innerHTML = [
+      `<option value="">固定しない（毎回ランダム）</option>`,
+      ...pool.map((p) => `<option value="${esc(p.id)}">${esc([p.brand, p.name].filter(Boolean).join(' '))}</option>`),
+    ].join('');
+  };
+  renderProducts();
+  catSel.onchange = renderProducts;
+
+  if (!products.length) {
+    catSel.innerHTML = '<option value="">商品マスタが空です（設定タブで登録）</option>';
+    prodSel.innerHTML = '<option value="">—</option>';
+  }
+}
+
+$('#mode-customer').addEventListener('change', renderTypeDetail);
+
+$('#mode-dialog').addEventListener('close', async () => {
+  if ($('#mode-dialog').returnValue !== 'ok') return;
+  const name = $('#mode-name').value.trim();
+  if (!name) return;
+  const out = await api
+    .createMode({
+      name,
+      criteriaId: $('#mode-criteria').value,
+      customerType: $('#mode-customer').value,
+      scenario: $('#mode-scenario').value,
+      voice: $('#mode-voice').value,
+      productCategory: $('#mode-category')?.value || '',
+      productId: $('#mode-product')?.value || '',
+    })
+    .catch((err) => {
+      alert(`作成できませんでした：${err.message}`);
+      return null;
+    });
+  if (out) await refreshModes();
+});
+
+/* ---------------------------- 取り込みの調整 ------------------------------ */
+
+// 音声の取り出しは制作側の作業なので、調整値もこの画面に置く
+for (const [key, sel] of Object.entries({ hpCutoff: '#hp-cutoff', maxGain: '#max-gain', silenceFactor: '#silence-factor' })) {
+  const input = $(sel);
+  if (!input) continue;
+  input.value = settings.get(key) ?? DEFAULTS[key];
+  input.addEventListener('input', () => settings.set(key, Number(input.value) || DEFAULTS[key]));
+}
+const trimBox = $('#trim-enabled');
+if (trimBox) {
+  trimBox.checked = settings.get('trim') !== false;
+  trimBox.addEventListener('change', () => settings.set('trim', trimBox.checked));
+}
+const vocabBox = $('#vocabulary');
+if (vocabBox) {
+  vocabBox.value = settings.get('vocabulary') || '';
+  vocabBox.addEventListener('input', () => settings.set('vocabulary', vocabBox.value));
+}
+
+const extractOptions = () => ({
+  hpCutoff: Number(settings.get('hpCutoff')) || DEFAULTS.hpCutoff,
+  maxGain: Number(settings.get('maxGain')) || DEFAULTS.maxGain,
+  silenceFactor: Number(settings.get('silenceFactor')) || DEFAULTS.silenceFactor,
+  trim: settings.get('trim') !== false,
+});
+
+/* --------------------------- モードの客タイプ ----------------------------- */
+
+async function refreshModes() {
+  const data = await api.listModes().catch(() => null);
+  if (data) modes = data.modes;
+}
+
+/**
+ * 客タイプを2トラックに分けて並べる。
+ * 通常と大逆転は作る目的が違うので、同じ平たい一覧に混ぜない。
+ */
+function fillTypeGroups(el, types, tracks) {
+  if (!el) return;
+  el.innerHTML = (tracks || [{ id: 'standard', label: 'すべて' }])
+    .map((tr) => {
+      const inTrack = (types || []).filter((t) => (t.track || 'standard') === tr.id);
+      if (!inTrack.length) return '';
+      return `<optgroup label="${esc(tr.label)}｜${esc(tr.hint || '')}">
+        ${inTrack.map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('')}
+      </optgroup>`;
+    })
+    .join('');
+}
+
+/** 選んだ客タイプが何を試す型なのかを、モードを作る前に見せる */
+function renderTypeDetail() {
+  const box = $('#mode-type-detail');
+  if (!box) return;
+  const t = (config.customerTypes || []).find((x) => x.id === $('#mode-customer').value);
+  if (!t) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = `
+    <span class="pill ${t.track === 'reversal' ? '' : 'yes'}">${t.track === 'reversal' ? '大逆転' : '通常'}</span>
+    <span>${esc(t.hint.split('\n')[0])}</span>
+    <span><strong>折れる条件：</strong>${(t.flags || []).map((f) => esc(f.label)).join(' ／ ')}</span>
+    <span><strong>禁じ手：</strong>${esc(t.breaker || '')}</span>`;
+}
+
+$('#mode-customer')?.addEventListener('change', renderTypeDetail);
 
 /* ------------------------------- 商品マスタ ------------------------------ */
 
