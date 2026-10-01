@@ -1043,7 +1043,14 @@ const routes = [
       if (!text) text = await transcribeIfAudio(env, auth.client, body);
       if (!text) throw new ApiError(400, '発話（音声またはテキスト）が必要です');
 
-      const history = [...run.history, { role: 'trainee', text }];
+      // 「間」の計測値。ブラウザ側で測ったものをそのまま持つ。
+      // 読み上げが鳴り終わってから店員が口を開くまでが gap、開始からの経過が at。
+      const t = body.timing || {};
+      const sec = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.round(Number(v) * 10) / 10 : null);
+      const history = [
+        ...run.history,
+        { role: 'trainee', text, at: sec(t.at), gap: sec(t.gap) },
+      ];
       const { dialect } = await db.getGlossary(env, auth.client);
       const turn = await speakAsCustomer(env, mode, history, { dialect, items: run.items });
       history.push({ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags });

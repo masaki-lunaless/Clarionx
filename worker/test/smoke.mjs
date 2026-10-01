@@ -6,7 +6,7 @@ import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
 import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
 import { parseGlossary } from '../src/db.js';
-import { CUSTOMER_TYPES, MOODS, SCENES, glossaryBlock, roleplaySystemPrompt, voiceDirection } from '../src/prompts.js';
+import { CUSTOMER_TYPES, MOODS, SCENES, conversationText, glossaryBlock, roleplaySystemPrompt, scoringRequest, voiceDirection } from '../src/prompts.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -602,6 +602,37 @@ check('トラック: 全型に開始時の心境がある',
   CUSTOMER_TYPES.every((t) => MOODS.some((m) => m.id === t.opening)));
 check('トラック: 不満客は苛立ちから始まる', CUSTOMER_TYPES.find((t) => t.id === 'complaint').opening === 'irritated');
 check('トラック: 見せに来ただけは乗り気から始まる', CUSTOMER_TYPES.find((t) => t.id === 'showoff').opening === 'engaged');
+
+/* ============================== 間の計測 ============================== */
+
+// 「黙って待つ」は判断基準によく出るが、書き起こしだけでは跡形もなく消える。
+// 画面には出さず、採点にだけ秒数を渡す。
+const timed = [
+  { role: 'customer', text: 'これ、いくらになりますか。' },
+  { role: 'trainee', text: 'まずお品物を拝見しますね。', at: 4.2, gap: 4.2 },
+  { role: 'customer', text: 'はい。' },
+  { role: 'trainee', text: '50万円でいかがでしょうか。', at: 31, gap: 1.1 },
+  { role: 'trainee', text: 'あ、もちろんご相談も…', at: 32.1, gap: 0.4 },
+];
+const convoText = conversationText(timed);
+check('間: 沈黙を秒数で差し込む', convoText.includes('（4.2秒 沈黙）'), convoText);
+check('間: 1秒未満は書かない', !convoText.includes('0.4秒'));
+check('間: 金額提示前の短い間も出る', convoText.includes('（1.1秒 沈黙）'));
+check('間: 発話は落とさない', timed.every((m) => convoText.includes(m.text)));
+check('間: 計測なしの回は素のまま',
+  conversationText([{ role: 'trainee', text: 'はい' }]) === '店員：はい');
+
+const timedReq = scoringRequest({ history: timed, criteria: '# 基準', customerType: 'kaitori' });
+const timedUser = timedReq.messages[0].content;
+check('間: 秒数そのもので減点させない', timedUser.includes('この秒数そのもので加点・減点はしないでください'));
+const plainReq = scoringRequest({ history: [{ role: 'trainee', text: 'はい' }], criteria: '# 基準', customerType: 'kaitori' });
+check('間: 計測のない回はそう伝える', plainReq.messages[0].content.includes('間の計測がありません'));
+
+// 秒数は履歴に残す（採点と、あとから見直すため）。画面に出さないのは app.js 側の判断
+const timedVisible = visibleHistory(timed);
+check('間: 伏せるのは条件だけで、秒数は履歴に残る',
+  timedVisible[1].gap === 4.2 && timedVisible.every((m) => m.flags === undefined),
+  JSON.stringify(timedVisible[1]));
 
 /* --------- 場面：買取であって販売ではない --------- */
 

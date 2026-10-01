@@ -465,3 +465,17 @@ tr.is-off td { text-decoration: line-through; }
 .picker .check { margin: 0; padding: 3px 0; }
 .picker .item-meta { margin-left: 8px; font-style: normal; font-size: .72rem; color: var(--ink-2); }
 .hint.error { color: var(--error); }
+
+/* ---- 右端にボタンを置く一覧行（モード管理など） ---- */
+/* .item はサイドバーの縦積み用に flex-direction: column になっているので、
+   ここで横並びに戻す */
+li.item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: default;
+}
+li.item > div { min-width: 0; }
+li.item .btn { flex: 0 0 auto; width: auto; }

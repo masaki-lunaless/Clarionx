@@ -553,6 +553,9 @@ function renderCriteriaSelect() {
     : '<option value="">まだありません</option>';
   const modeSel = $('#mode-criteria');
   modeSel.innerHTML = criteriaList.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join('');
+
+  // 開いた時点で先頭を出す。選び直すまで本文もモード一覧も空のままだった
+  if (!current.criteriaId && criteriaList.length) showCriteria(criteriaList[0].id);
 }
 
 $('#criteria-select').addEventListener('change', (e) => e.target.value && showCriteria(e.target.value));
@@ -564,6 +567,7 @@ async function showCriteria(id) {
   $('#criteria-doc').value = data.criteria.markdown;
   const fb = await api.criteriaFeedback(id).catch(() => ({ feedback: [] }));
   renderCriteriaFeedback(fb.feedback);
+  renderAdminModes();
 }
 
 function renderCriteriaFeedback(list) {
@@ -698,7 +702,10 @@ $('#mode-dialog').addEventListener('close', async () => {
       alert(`作成できませんでした：${err.message}`);
       return null;
     });
-  if (out) await refreshModes();
+  if (out) {
+    await refreshModes();
+    renderAdminModes();
+  }
 });
 
 /* ---------------------------- 取り込みの調整 ------------------------------ */
@@ -771,6 +778,43 @@ function renderTypeDetail() {
 }
 
 $('#mode-customer')?.addEventListener('change', renderTypeDetail);
+
+/* ---------------------- ロープレモードの管理 ----------------------------- */
+
+// 作ったモードを消す口がどこにも無かった。作りっぱなしだと一覧が溜まる一方になる。
+function renderAdminModes() {
+  const box = $('#admin-mode-list');
+  if (!box) return;
+  const mine = modes.filter((m) => !current.criteriaId || m.criteria_id === current.criteriaId);
+  box.innerHTML = mine.length
+    ? mine
+        .map(
+          (m) => `<li class="item">
+            <div>
+              <strong>${esc(m.name)}</strong>
+              <span class="item-meta">${esc(typeLabel(m.customer_type))}・実施${esc(m.run_count ?? 0)}回${m.attached_count ? `・持ち込み${esc(m.attached_count)}点` : ''}</span>
+            </div>
+            <button class="btn btn-ghost btn-sm danger" data-mode-del="${esc(m.id)}">削除</button>
+          </li>`,
+        )
+        .join('')
+    : '<li class="item"><span class="hint">この判断基準から作ったモードはまだありません。</span></li>';
+}
+
+const typeLabel = (id) => (config.customerTypes || []).find((t) => t.id === id)?.label || id || '';
+
+$('#admin-mode-list')?.addEventListener('click', async (e) => {
+  const id = e.target.dataset.modeDel;
+  if (!id) return;
+  const target = modes.find((m) => m.id === id);
+  const used = target?.run_count ?? 0;
+  if (!confirm(`「${target?.name || ''}」を削除します。${used ? `${used}回の実施記録は残ります。` : ''}よろしいですか。`)) return;
+  const ok = await run(null, $('#merge-status'), '削除中…', () => api.deleteMode(id));
+  if (!ok) return;
+  await refreshModes();
+  renderAdminModes();
+  status($('#merge-status'), '削除しました', 'ok');
+});
 
 /* ------------------------------- 商品マスタ ------------------------------ */
 

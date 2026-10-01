@@ -109,8 +109,11 @@ export const api = {
   deleteMode: (id) => request('DELETE', `/api/modes/${id}`),
   listRuns: (criteriaId) => request('GET', `/api/runs${criteriaId ? `?criteriaId=${criteriaId}` : ''}`),
   startRun: (modeId, trainee) => request('POST', '/api/runs', { modeId, trainee }),
-  turn: (runId, { text, audio, filename, payload }) =>
-    audio ? upload(`/api/runs/${runId}/turn`, { audio, payload, filename }) : request('POST', `/api/runs/${runId}/turn`, { text }),
+  // timing は「間」の計測値。画面には出さないが、採点の材料として送る
+  turn: (runId, { text, audio, filename, payload, timing }) =>
+    audio
+      ? upload(`/api/runs/${runId}/turn`, { audio, payload, filename })
+      : request('POST', `/api/runs/${runId}/turn`, { text, timing }),
   score: (runId) => request('POST', `/api/runs/${runId}/score`, {}),
   feedback: (runId, data) => request('PATCH', `/api/runs/${runId}/feedback`, data),
 };

@@ -193,8 +193,10 @@ $('#start-run').addEventListener('click', async (e) => {
   );
   if (!out) return;
   current.run = out.runId;
+  startTiming();
   renderConvo(out.history);
   play(out.replyText, out.audioUrl);
+  if (!out.audioUrl) markCustomerDone(false);
   setPractice(true);
 });
 
@@ -223,9 +225,10 @@ async function sendTurn(payload) {
   const statusEl = $('#practice-status');
   status(statusEl, payload.audio ? '聞き取り中…お客様が考えています' : 'お客様が考えています…');
   try {
-    const out = await api.turn(current.run, payload);
+    const out = await api.turn(current.run, { ...payload, timing: payload.timing || takeTiming() });
     renderConvo(out.history);
     play(out.replyText, out.audioUrl);
+    if (!out.audioUrl) markCustomerDone(false);
     status(statusEl, '');
   } catch (err) {
     status(statusEl, err.message, 'error');
@@ -474,6 +477,58 @@ const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAA
 let audioUnlocked = false;
 let lastObjectUrl = null;
 
+/* -------------------------------- 間の計測 ------------------------------- */
+
+// 「黙って待つ」を後から評価できるようにするため、時刻だけ裏で取る。
+// 画面には出さない。出すと受講者が時計を見ながら喋ることになる。
+//
+// 客の声が鳴り終わってから店員が口を開くまでが「間」。
+// サーバの応答時刻で測ると、ClaudeとTTSの待ち時間がそのまま間に化けるので、
+// ブラウザ側で、実際に音が止まった瞬間を起点にする。
+const timing = {
+  runStartedAt: 0,      // 開始を押した時刻
+  customerEndedAt: 0,   // 客の音声が鳴り終わった時刻
+  measurable: false,    // 音声で練習しているか（テキスト練習では間を測らない）
+  playingCustomer: false, // いま鳴っているのが客のセリフか
+};
+
+const nowMs = () => (window.performance?.now?.() ?? Date.now());
+
+function startTiming() {
+  timing.runStartedAt = nowMs();
+  timing.customerEndedAt = 0;
+  timing.measurable = false;
+}
+
+/** 客が喋り終わった。ここから店員が口を開くまでを数える */
+function markCustomerDone(hadAudio) {
+  timing.customerEndedAt = nowMs();
+  timing.measurable = Boolean(hadAudio);
+  timing.playingCustomer = false;
+}
+
+/**
+ * 店員がターンを取った時点の計測値。
+ * at … 開始からの経過秒。gap … 客が黙ってから口を開くまでの秒。
+ * 音声で鳴っていない回は gap を測らない（読み上げが無いと起点が無い）。
+ */
+function takeTiming() {
+  const t = nowMs();
+  const at = timing.runStartedAt ? (t - timing.runStartedAt) / 1000 : null;
+  const gap = timing.measurable && timing.customerEndedAt ? (t - timing.customerEndedAt) / 1000 : null;
+  return {
+    at: at === null ? null : Math.round(at * 10) / 10,
+    gap: gap === null ? null : Math.round(gap * 10) / 10,
+  };
+}
+
+// 読み上げが終わった瞬間を起点にする。
+// iOS対策の無音WAVも同じ要素で鳴らしているので、客のセリフのときだけ拾う
+player.addEventListener('ended', () => {
+  if (timing.playingCustomer) markCustomerDone(true);
+});
+
+
 // iOS Safariはユーザー操作の中でしか再生を開始できない。
 // 操作の瞬間に無音を鳴らして、以降のプログラム再生を許可させる。
 function unlockAudio() {
@@ -486,9 +541,11 @@ function unlockAudio() {
 
 function play(text, audioUrl) {
   if (!audioUrl) {
+    timing.playingCustomer = false;
     speak(text);
     return;
   }
+  timing.playingCustomer = true;
   if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl);
   lastObjectUrl = audioUrl.startsWith('data:') ? dataUriToObjectUrl(audioUrl) : null;
   player.src = lastObjectUrl || audioUrl;
@@ -536,6 +593,9 @@ $('#record-btn').addEventListener('click', async () => {
     mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     chunks = [];
     mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    // 間は「ボタンを押した瞬間」で確定させる。送信時に測ると、
+    // 喋っていた時間まで沈黙に足されてしまう
+    const taken = takeTiming();
     mediaRecorder.onstop = () => {
       setRecordingUI(false);
       const type = mediaRecorder.mimeType || mimeType || 'audio/webm';
@@ -544,7 +604,8 @@ $('#record-btn').addEventListener('click', async () => {
         sendTurn({
           audio: blob,
           filename: `turn.${type.includes('mp4') || type.includes('aac') ? 'mp4' : 'webm'}`,
-          payload: { vocabulary: settings.get('vocabulary') },
+          payload: { vocabulary: settings.get('vocabulary'), timing: taken },
+          timing: taken,
         });
       }
     };

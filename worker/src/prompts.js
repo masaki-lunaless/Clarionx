@@ -670,8 +670,27 @@ ${list.length > 1 ? '点ごとに言っている場合は合計し、まとめ�
 `;
 }
 
+/**
+ * 会話を採点にかける形にする。
+ *
+ * 店員が口を開くまでの間を、秒数のまま本文に差し込む。
+ * 「黙って待つ」は判断基準によく出てくるが、書き起こしだけでは跡形もなく消える。
+ * 何秒が正解かは場面で違うので、数字だけ置いて判断は判断基準の軸に任せる。
+ */
+export function conversationText(history = []) {
+  const lines = [];
+  for (const m of history) {
+    if (m.role === 'trainee' && Number.isFinite(m.gap) && m.gap >= 1) {
+      lines.push(`（${m.gap.toFixed(1)}秒 沈黙）`);
+    }
+    lines.push(`${m.role === 'trainee' ? '店員' : '客'}：${m.text}`);
+  }
+  return lines.join('\n');
+}
+
 export function scoringRequest({ history, criteria, customerType, items, flagsMet = [] }) {
-  const convo = history.map((m) => `${m.role === 'trainee' ? '店員' : '客'}：${m.text}`).join('\n');
+  const convo = conversationText(history);
+  const measured = history.some((m) => Number.isFinite(m.gap));
   const type = typeOf(customerType);
 
   return {
@@ -702,6 +721,14 @@ ${criteria}
 
 【ロープレ会話】
 ${convo}
+${
+  measured
+    ? `
+（◯秒 沈黙）は、客が話し終えてから店員が口を開くまでの実測値です。1秒未満は書いていません。
+**この秒数そのもので加点・減点はしないでください。**判断基準に「間を取る」「急かさない」のような軸が
+あるときだけ、その軸の根拠として使ってください。何秒が適切かは場面によって違います。`
+    : '\n（この回は間の計測がありません。テキストで練習した回です）'
+}
 
 上記を評価してください。`,
       },
