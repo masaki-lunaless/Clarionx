@@ -9,7 +9,7 @@
 
 import { ApiError, EFFORT, MODELS, generateStructured, generateText } from './llm.js';
 import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
-import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItem, priceFor, pricePenalty } from './items.js';
+import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItems, priceFor, pricePenalty, totalOf } from './items.js';
 import { SEED_PRODUCTS } from './seed-products.js';
 import {
   ROLE_LIST, hashPassword, hasRole, newSessionToken, normalizeCode,
@@ -53,14 +53,16 @@ export const SCORING = {
  * AIには軸ごとの減点幅（0〜10）・成約の二値判定・提示額の抜き出しだけを任せ、
  * 合計はここで決める。採点のたびに配点が揺れないようにするため。
  */
-export function computeTotal(score, item = null) {
+export function computeTotal(score, items = null) {
+  const list = [].concat(items || []).filter(Boolean);
   const axes = score.per_axis || [];
   const cap = axes.length * 10;
   const raw = axes.reduce((sum, a) => sum + Math.min(10, Math.max(0, Number(a.deduction) || 0)), 0);
-  const maxAxis = item ? SCORING.axisPenaltyWithItem : SCORING.maxAxisPenalty;
+  const maxAxis = list.length ? SCORING.axisPenaltyWithItem : SCORING.maxAxisPenalty;
   const axisPenalty = cap ? Math.round((raw / cap) * maxAxis) : 0;
   const closePenalty = score.closed ? 0 : SCORING.unclosedPenalty;
-  const price = item ? pricePenalty(item, score.offered_price) : null;
+  // 複数点なら合計の幅と突き合わせる。点ごとに言われても最後は合計で見る
+  const price = list.length ? pricePenalty(totalOf(list), score.offered_price) : null;
   const pricePen = price?.penalty || 0;
   return {
     ...score,
@@ -72,7 +74,7 @@ export function computeTotal(score, item = null) {
       axisPenalty,
       maxAxisPenalty: maxAxis,
       pricePenalty: pricePen,
-      maxPricePenalty: item ? PRICE_PENALTY.max : 0,
+      maxPricePenalty: list.length ? PRICE_PENALTY.max : 0,
     },
   };
 }
@@ -105,10 +107,11 @@ export function withFlagLabels(score, customerType) {
  * 練習中に正解額が見えたら訓練にならないので、採点が終わるまでは伏せる。
  * 伏せていること自体は返す（画面に「採点後に開示」と出せるように）。
  */
-export function visibleItem(run) {
-  if (!run?.item) return null;
-  if (!run.score) return { hidden: true };
-  return run.item;
+export function visibleItems(run) {
+  const list = run?.items?.length ? run.items : [].concat(run?.item || []).filter(Boolean);
+  if (!list.length) return [];
+  if (!run.score) return [{ hidden: true }];
+  return list;
 }
 
 /* -------------------------------- 共通処理 -------------------------------- */
@@ -292,25 +295,29 @@ function criteriaToMarkdown(doc) {
  * 商品マスタの貼り付けテキストを解釈する。
  * 1行 = カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考
  * Excelからの貼り付け（タブ区切り）とCSVの両方を受ける。
+ *
+ * 読めなかった行はそのまま返す。黙って0件になると、何が悪いのか分からない。
  */
 export function parseProducts(text) {
   const rows = [];
+  const bad = [];
   for (const raw of String(text || '').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     // 区切りは行ごとに決める。Excelの貼り付けはタブで、金額に「1,450,000」とカンマが入るため、
     // タブがある行をカンマでも切ると金額が壊れる
     const cols = (line.includes('\t') ? line.split('\t') : line.split(',')).map((c) => c.trim());
-    // 見出し行を読み飛ばす
-    if (/^(カテゴリ|category)$/i.test(cols[0])) continue;
+    if (/^(カテゴリ|category)$/i.test(cols[0])) continue; // 見出し行
     const [category = '', brand = '', model = '', name = '', price = '', retention = '', notes = ''] = cols;
-    if (!name) continue;
-    const newPrice = Math.round(Number(String(price).replace(/[,円\s]/g, ''))) || 0;
-    const rate = Math.round(Number(String(retention).replace(/[%\s]/g, ''))) || 30;
-    if (newPrice <= 0) continue;
+    const newPrice = Math.round(Number(String(price).replace(/[,，円¥￥\s]/g, ''))) || 0;
+    const rate = Math.round(Number(String(retention).replace(/[%％\s]/g, ''))) || 30;
+    if (!name || newPrice <= 0) {
+      bad.push(line.slice(0, 80));
+      continue;
+    }
     rows.push({ category, brand, model, name, newPrice, retention: Math.min(500, Math.max(1, rate)), notes });
   }
-  return rows;
+  return { rows, bad };
 }
 
 /**
@@ -824,20 +831,76 @@ const routes = [
     },
   ],
 
-  // 貼り付けたテキストで総入れ替えする。Excelから1列ずつ持ってくる使い方を想定
+  // 1件ずつ足す。総入れ替えはしない
   [
     'POST',
     '/api/products',
     async ({ env, auth, body }) => {
       requireAdmin(auth);
-      const rows = parseProducts(body.text || '');
-      if (!rows.length) throw new ApiError(400, '登録できる行がありません。書式を確認してください');
-      const count = await db.replaceProducts(env, auth.client, rows);
-      return { count };
+      const name = requireString(body.name, '商品名', 200);
+      const newPrice = Math.round(Number(body.newPrice)) || 0;
+      if (newPrice <= 0) throw new ApiError(400, '新品価格を入れてください');
+      return {
+        product: await db.createProduct(env, auth.client, {
+          category: String(body.category || '').slice(0, 60),
+          brand: String(body.brand || '').slice(0, 100),
+          model: String(body.model || '').slice(0, 100),
+          name,
+          newPrice,
+          retention: Math.min(500, Math.max(1, Math.round(Number(body.retention)) || 30)),
+          notes: String(body.notes || '').slice(0, 500),
+        }),
+      };
     },
   ],
 
-  // 初期データ。空のマスタに最初の100点を入れる
+  [
+    'PATCH',
+    '/api/products/:id',
+    async ({ env, auth, params, body }) => {
+      requireAdmin(auth);
+      const fields = {};
+      for (const k of ['category', 'brand', 'model', 'name', 'notes']) {
+        if (body[k] !== undefined) fields[k] = String(body[k]).slice(0, 500);
+      }
+      if (body.newPrice !== undefined) fields.newPrice = Math.max(0, Math.round(Number(body.newPrice)) || 0);
+      if (body.retention !== undefined) {
+        fields.retention = Math.min(500, Math.max(1, Math.round(Number(body.retention)) || 30));
+      }
+      if (body.active !== undefined) fields.active = Boolean(body.active);
+      return { product: await db.updateProduct(env, auth.client, params.id, fields) };
+    },
+  ],
+
+  [
+    'DELETE',
+    '/api/products/:id',
+    async ({ env, auth, params }) => {
+      requireAdmin(auth);
+      await db.deleteProduct(env, auth.client, params.id);
+      return { ok: true };
+    },
+  ],
+
+  // 貼り付けたテキストから足す。既存は消さない
+  [
+    'POST',
+    '/api/products/import',
+    async ({ env, auth, body }) => {
+      requireAdmin(auth);
+      const { rows, bad } = parseProducts(body.text || '');
+      if (!rows.length) {
+        throw new ApiError(
+          400,
+          '読み取れる行がありませんでした。1行1件で、タブ区切り（Excelからの貼り付け）かカンマ区切りにしてください',
+          bad.slice(0, 3),
+        );
+      }
+      return { ...(await db.addProducts(env, auth.client, rows)), bad: bad.slice(0, 20) };
+    },
+  ],
+
+  // 初期データ。すでにある商品は飛ばして足す
   [
     'POST',
     '/api/products/seed',
@@ -846,8 +909,7 @@ const routes = [
       const rows = SEED_PRODUCTS.map(([category, brand, model, name, newPrice, retention, notes]) => ({
         category, brand, model, name, newPrice, retention, notes,
       }));
-      const count = await db.replaceProducts(env, auth.client, rows);
-      return { count };
+      return db.addProducts(env, auth.client, rows);
     },
   ],
 
@@ -867,19 +929,41 @@ const routes = [
       const criteriaId = requireString(body.criteriaId, 'criteriaId', 100);
       await db.getCriteria(env, auth.client, criteriaId); // 存在確認
       const customerType = requireString(body.customerType, 'customerType', 100);
-      // 品物を固定するなら実在確認をしておく。存在しないIDのまま作ると開始時に落ちる
-      const productId = String(body.productId || '').trim();
-      if (productId) await db.getProduct(env, auth.client, productId);
       const mode = await db.createMode(env, auth.client, {
         name,
         criteriaId,
         customerType,
         scenario: body.scenario,
         voice: body.voice,
-        productId,
         productCategory: String(body.productCategory || '').trim(),
       });
-      return { mode: modeSummary(mode, { admin: auth.admin }) };
+      // 持ち込む品物。複数点を付けられる（バッグと財布、など）
+      const ids = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
+      if (ids.length) await db.setModeProducts(env, auth.client, mode.id, ids);
+      return { mode: modeSummary(mode, { admin: auth.admin }), products: await db.listModeProducts(env, mode.id) };
+    },
+  ],
+
+
+  // シナリオに付ける品物の付け外し
+  [
+    'GET',
+    '/api/modes/:id/products',
+    async ({ env, auth, params }) => {
+      requireRole(auth, 'trainer');
+      await db.getMode(env, auth.client, params.id); // 持ち主の確認
+      return { products: await db.listModeProducts(env, params.id) };
+    },
+  ],
+
+  [
+    'POST',
+    '/api/modes/:id/products',
+    async ({ env, auth, params, body }) => {
+      requireAdmin(auth);
+      await db.getMode(env, auth.client, params.id);
+      const ids = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
+      return { products: await db.setModeProducts(env, auth.client, params.id, ids) };
     },
   ],
 
@@ -900,7 +984,7 @@ const routes = [
         criteriaId: url.searchParams.get('criteriaId') || undefined,
         staffId: hasRole(auth, 'trainer') ? undefined : auth.staffId || undefined,
       })
-    ).map((r) => ({ ...r, item: visibleItem(r) })),
+    ).map((r) => ({ ...r, items: visibleItems(r), history: r.score ? r.history : visibleHistory(r.history) })),
     scope: hasRole(auth, 'trainer') ? 'company' : 'self',
   })],
 
@@ -911,16 +995,17 @@ const routes = [
     async ({ env, auth, body }) => {
       const mode = await db.getMode(env, auth.client, requireString(body.modeId, 'modeId', 100));
 
-      // 品物はここで1点引き、状態と正解額まで固めて run に保存する。
+      // 品物はここで引き、状態と正解額まで固めて run に保存する。
       // 会話の途中で作ると毎ターン変わってしまうため、開始時に一度だけ決める。
-      // マスタが空のときは品物なしで動かす（従来どおりの練習になる）。
-      let item = null;
-      if (await db.countProducts(env, auth.client)) {
-        const product = await db.drawProduct(env, auth.client, {
-          productId: mode.product_id,
-          category: mode.product_category,
-        });
-        item = drawItem(product);
+      //
+      // シナリオに品物が付いていればそれを全部（「バッグと財布」のような持ち込み）。
+      // 付いていなければカテゴリから1点を引く。マスタが空なら品物なしで動かす。
+      let items = [];
+      const attached = await db.listModeProducts(env, mode.id);
+      if (attached.length) {
+        items = drawItems(attached);
+      } else if (await db.countProducts(env, auth.client)) {
+        items = drawItems([await db.drawProduct(env, auth.client, { category: mode.product_category })]);
       }
 
       const runId = await db.createRun(env, auth.company, {
@@ -930,17 +1015,17 @@ const routes = [
         trainee: (auth.staffName || String(body.trainee || '')).slice(0, 100),
         staffId: auth.staffId,
         store: auth.store,
-        item,
+        items,
       });
       const { dialect } = await db.getGlossary(env, auth.client);
-      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect, item });
+      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect, items });
       const history = [{ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags }];
       await db.saveRun(env, auth.company, runId, { history });
       // item も flags も返さない。正解が見えたら訓練にならない。
       // 表情（mood）だけは返す。対面なら見えているものなので、音声だけの都合で奪わない
       return {
         runId, mode: modeSummary(mode), history: visibleHistory(history),
-        hasItem: Boolean(item), replyText: turn.replyText, audioUrl: turn.audioUrl,
+        itemCount: items.length, replyText: turn.replyText, audioUrl: turn.audioUrl,
         mood: turn.mood, face: turn.face,
       };
     },
@@ -960,7 +1045,7 @@ const routes = [
 
       const history = [...run.history, { role: 'trainee', text }];
       const { dialect } = await db.getGlossary(env, auth.client);
-      const turn = await speakAsCustomer(env, mode, history, { dialect, item: run.item });
+      const turn = await speakAsCustomer(env, mode, history, { dialect, items: run.items });
       history.push({ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags });
       await db.saveRun(env, auth.company, params.id, { history });
       return {
@@ -983,14 +1068,14 @@ const routes = [
         history: run.history,
         criteria: criteria.markdown,
         customerType: mode?.customer_type,
-        item: run.item,
+        items: run.items,
         flagsMet: state.everMet,
       });
       const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000, effort: EFFORT.scoring, label: 'score' });
-      const score = withFlagLabels(computeTotal(raw, run.item), mode?.customer_type);
+      const score = withFlagLabels(computeTotal(raw, run.items), mode?.customer_type);
       await db.saveRun(env, auth.company, params.id, { score });
       // 採点が済んだので、ここで初めて品物・正解額・条件の到達状況を返す
-      return { score, item: run.item };
+      return { score, items: run.items };
     },
   ],
 
@@ -1073,9 +1158,9 @@ const modeSummary = (m, { admin = false } = {}) => ({
   scenario: m.scenario,
   voice: m.voice,
   product_category: m.product_category || '',
-  has_fixed_product: Boolean(m.product_id),
+  // 何点持ち込むかは出すが、何を持ち込むかは出さない（それが答えになる）
+  attached_count: m.attached_count ?? 0,
   run_count: m.run_count ?? 0,
-  ...(admin ? { product_id: m.product_id || '', product_name: m.product_name || '' } : {}),
 });
 
 /**
@@ -1128,7 +1213,7 @@ export function stateOf(history = []) {
  * セリフと一緒に心境と条件の達成状況を返させ、次のターンと読み上げの演技に渡す。
  * これが無いと、不満客は20ターン目でも1ターン目と同じ声のままになる。
  */
-async function speakAsCustomer(env, mode, history, { opening, dialect, item }) {
+async function speakAsCustomer(env, mode, history, { opening, dialect, items }) {
   const messages = history.map((m) => ({
     role: m.role === 'trainee' ? 'user' : 'assistant',
     content: String(m.text || '').slice(0, 4000),
@@ -1142,7 +1227,7 @@ async function speakAsCustomer(env, mode, history, { opening, dialect, item }) {
     scenario: mode.scenario,
     criteria: mode.criteria_markdown,
     dialect,
-    item,
+    items,
     mood: state.mood || type?.opening,
     flagsMet: state.flagsMet,
   });

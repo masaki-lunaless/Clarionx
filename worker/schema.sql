@@ -184,3 +184,15 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions (expires_at);
 -- 誰がやった記録かを持つ。trainee は自分の分しか見られない
 ALTER TABLE runs ADD COLUMN staff_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN store TEXT NOT NULL DEFAULT '';
+
+-- シナリオに商品を複数ひも付ける（後から追加）。
+-- 現場では1人が「バッグと財布」のように複数点を持ってくる。
+CREATE TABLE IF NOT EXISTS mode_products (
+  mode_id    TEXT NOT NULL REFERENCES modes (id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES products (id) ON DELETE CASCADE,
+  seq        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (mode_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mode_products ON mode_products (mode_id, seq);
+
+ALTER TABLE runs ADD COLUMN items TEXT;

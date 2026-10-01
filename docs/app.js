@@ -153,7 +153,7 @@ function renderModeList() {
         .map(
           (m) => `<li><button class="item ${m.id === current.modeId ? 'is-active' : ''}" data-id="${m.id}">
             <span class="item-name">${esc(m.name)}</span>
-            <span class="item-meta">${esc(m.criteria_title)}・実施${m.run_count}回</span>
+            <span class="item-meta">${esc(m.criteria_title)}・実施${m.run_count}回${m.attached_count ? `・持ち込み${m.attached_count}点` : ''}</span>
           </button></li>`,
         )
         .join('')
@@ -245,7 +245,7 @@ $('#text-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('#sen
 $('#score-run').addEventListener('click', async (e) => {
   const out = await run(e.target, $('#practice-status'), '採点中…（1分ほどかかります）', () => api.score(current.run));
   if (!out) return;
-  renderScore(out.score, out.item);
+  renderScore(out.score, out.items);
   $('#feedback-box').hidden = false;
   $('#fb-note').value = '';
   $('#fb-realism').value = '';
@@ -258,59 +258,44 @@ const yen = (v) => `${Math.round(Number(v) || 0).toLocaleString('ja-JP')}円`;
 /**
  * 品物と正解額は、練習中は伏せてあってここで初めて出る。
  * 「何を、どの状態で、いくらが正解だったか」を並べて見せないと、
- * 提示額の当たり外れが振り返れない。
+ * 提示額の当たり外れが振り返れない。複数点なら合計も出す。
  */
-function renderItem(item, price) {
-  if (!item) return '';
+function renderItems(items, price) {
+  const list = (items || []).filter((i) => i && !i.hidden);
+  if (!list.length) return '';
+  const total = list.reduce(
+    (a, b) => ({ low: a.low + b.low, fair: a.fair + b.fair, high: a.high + b.high }),
+    { low: 0, fair: 0, high: 0 },
+  );
   const verdict = { fair: 'ok', low: 'ng', high: 'ng', none: '' }[price?.verdict] || '';
   return `
     <div class="card item-card">
-      <h4>この回の品物（練習中は伏せていました）</h4>
-      <p class="item-name"><strong>${esc([item.brand, item.name].filter(Boolean).join(' '))}</strong>${item.model ? `<span class="item-meta">型番 ${esc(item.model)}</span>` : ''}</p>
-      <div class="breakdown">
-        <span>状態：${esc(item.condition_label)}</span>
-        <span>付属品：${esc(item.accessory_label)}</span>
-        <span>新品価格：${esc(yen(item.new_price))}</span>
-      </div>
+      <h4>この回の品物${list.length > 1 ? `（${list.length}点）` : ''}（練習中は伏せていました）</h4>
+      ${list
+        .map(
+          (item) => `<div class="axis">
+            <p class="item-name"><strong>${esc([item.brand, item.name].filter(Boolean).join(' '))}</strong>${item.model ? `<span class="item-meta">型番 ${esc(item.model)}</span>` : ''}</p>
+            <div class="breakdown">
+              <span>状態：${esc(item.condition_label)}</span>
+              <span>付属品：${esc(item.accessory_label)}</span>
+              <span>新品 ${esc(yen(item.new_price))}</span>
+              <span>適正 ${esc(yen(item.low))}〜${esc(yen(item.high))}</span>
+            </div>
+            ${item.notes ? `<p class="advice">→ 見どころ：${esc(item.notes)}</p>` : ''}
+          </div>`,
+        )
+        .join('')}
       <div class="breakdown">
         <span class="outcome ${verdict === 'ok' ? 'closed' : verdict === 'ng' ? 'unclosed' : ''}">
-          適正 ${esc(yen(item.low))}〜${esc(yen(item.high))}
+          ${list.length > 1 ? '合計の' : ''}適正 ${esc(yen(total.low))}〜${esc(yen(total.high))}
         </span>
         <span>${esc(price?.message || '')}</span>
       </div>
       ${price?.quote ? `<p class="evidence">${esc(price.quote)}</p>` : ''}
-      ${item.notes ? `<p class="advice">→ 見どころ：${esc(item.notes)}</p>` : ''}
     </div>`;
 }
 
-/**
- * 折れる条件の到達状況。
- * 成約したかの二値だけだと、不成約の回がすべて同じ顔になる。
- * 「2つまでは立っていた」が見えると、次に何をすればよいかが残る。
- */
-function renderFlags(score) {
-  const flags = score.flags || [];
-  if (!flags.length) return '';
-  const met = flags.filter((f) => f.met).length;
-  return `
-    <div class="card flags-card">
-      <h4>お客様が折れる条件（${met}／${flags.length} 到達）${score.track === 'reversal' ? '<span class="pill">大逆転</span>' : ''}</h4>
-      ${flags
-        .map(
-          (f) => `<div class="axis">
-            <div class="axis-head">
-              <strong>${esc(f.label)}</strong>
-              <span class="deduction ${f.met ? 'zero' : ''}">${f.met ? '到達' : '未到達'}</span>
-            </div>
-            ${f.evidence ? `<p class="evidence">${esc(f.evidence)}</p>` : ''}
-          </div>`,
-        )
-        .join('')}
-      ${score.breaker ? `<p class="advice">やってはいけないこと：${esc(score.breaker)}</p>` : ''}
-    </div>`;
-}
-
-function renderScore(s, item) {
+function renderScore(s, items) {
   const b = s.breakdown || {};
   $('#score-result').innerHTML = `
     <div class="card score">
@@ -336,7 +321,7 @@ function renderScore(s, item) {
       ${(s.next || []).length ? `<h4>次に意識すること</h4><ul>${s.next.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
     </div>
     ${renderFlags(s)}
-    ${renderItem(item, s.price)}`;
+    ${renderItems(items, s.price)}`;
 }
 
 $('#fb-save').addEventListener('click', async (e) => {
@@ -360,11 +345,13 @@ const fbLabel = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value =
 const typeLabel = (id) => config.customerTypes.find((t) => t.id === id)?.label || id || '';
 const when = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
 
-// 採点が済むまで品物は伏せたまま返ってくる（Worker側の visibleItem）
-const itemLabel = (item) => {
-  if (!item) return '—';
-  if (item.hidden) return '採点後に開示';
-  return [item.brand, item.name].filter(Boolean).join(' ');
+// 採点が済むまで品物は伏せたまま返ってくる（Worker側の visibleItems）
+const itemLabel = (items) => {
+  const list = items || [];
+  if (!list.length) return '—';
+  if (list[0].hidden) return '採点後に開示';
+  const names = list.map((i) => [i.brand, i.name].filter(Boolean).join(' '));
+  return names.length > 1 ? `${names[0]} ほか${names.length - 1}点` : names[0];
 };
 
 /** 記録の絞り込みに使う判断基準の一覧。本文は取らない（一覧は全員が見てよい） */
@@ -411,7 +398,7 @@ function renderRecords() {
           <td>${esc(r.trainee || '—')}</td>
           <td>${esc(r.mode_name || '—')}</td>
           <td>${esc(typeLabel(r.customer_type))}</td>
-          <td>${esc(itemLabel(r.item))}</td>
+          <td>${esc(itemLabel(r.items))}</td>
           <td>${r.score ? `<span class="pill ${r.score.breakdown?.closed ? 'yes' : 'no'}">${OUTCOME(r)}</span>` : '—'}</td>
           <td class="num">${r.score ? esc(r.score.total) : '—'}</td>
           <td class="num">${r.score ? `−${esc(r.score.breakdown?.axisPenalty ?? 0)}` : '—'}</td>
@@ -447,7 +434,7 @@ $('#records-table').addEventListener('click', (e) => {
           <p class="evidence">${esc(a.evidence)}</p><p class="advice">→ ${esc(a.advice)}</p></div>`)
         .join('')}</div>` : '<p class="hint">この回は採点されていません。</p>'}
     ${r.score ? renderFlags(r.score) : ''}
-    ${r.item && !r.item.hidden ? renderItem(r.item, r.score?.price) : ''}
+    ${renderItems(r.items, r.score?.price)}
     ${r.fb_note ? `<p class="hint">フィードバック：${esc(r.fb_note)}</p>` : ''}
   </td>`;
   tr.after(detail);
@@ -456,10 +443,12 @@ $('#records-table').addEventListener('click', (e) => {
 $('#records-csv').addEventListener('click', () => {
   const head = ['日時', '実施者', '店舗', 'モード', '判断基準', '客タイプ', '品物', '状態', '適正下限', '適正上限', '提示額', '成約', '総合点', '型の減点', '査定額の減点', '発話数', '客の再現度', '採点の納得感', 'コメント', '総評'];
   const rows = records.map((r) => {
-    const it = r.item && !r.item.hidden ? r.item : null;
+    const list = (r.items || []).filter((i) => i && !i.hidden);
+    const sum = list.reduce((a, b) => ({ low: a.low + b.low, high: a.high + b.high }), { low: 0, high: 0 });
     return [
       when(r.created_at), r.trainee, r.store, r.mode_name, r.criteria_title, typeLabel(r.customer_type),
-      itemLabel(r.item), it?.condition_label ?? '', it?.low ?? '', it?.high ?? '', r.score?.price?.offered ?? '',
+      itemLabel(r.items), list.map((i) => i.condition_label).join('／'),
+      list.length ? sum.low : '', list.length ? sum.high : '', r.score?.price?.offered ?? '',
       r.score ? OUTCOME(r) : '', r.score?.total ?? '', r.score?.breakdown?.axisPenalty ?? '',
       r.score?.breakdown?.pricePenalty ?? '',
       r.history.length, fbLabel('realism', r.fb_realism), fbLabel('scoring', r.fb_scoring),

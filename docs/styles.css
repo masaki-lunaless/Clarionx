@@ -435,3 +435,33 @@ tr.is-off td { text-decoration: line-through; }
 .gate-card details { margin-top: 18px; }
 
 .btn-wide { width: 100%; justify-content: center; }
+
+/* ---- 直接書き換えられる表（商品マスタ） ---- */
+.records.editable td { padding: 2px 4px; }
+.cell {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: .82rem;
+  padding: 5px 6px;
+}
+.cell:hover { border-color: var(--line); }
+.cell:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.cell.num { text-align: right; }
+
+/* ---- シナリオに付ける品物の選択 ---- */
+.picker {
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--surface-2);
+}
+.picker .check { margin: 0; padding: 3px 0; }
+.picker .item-meta { margin-left: 8px; font-style: normal; font-size: .72rem; color: var(--ink-2); }
+.hint.error { color: var(--error); }

@@ -84,6 +84,26 @@ export function drawItem(product) {
 }
 
 /**
+ * 複数点をまとめたときの正解額。
+ * 現場では1人が「バッグと財布」のように複数点を持ってくる。
+ * 店員は点ごとに言うことも、まとめて1本で言うこともあるので、
+ * 合計の幅を正解として持ち、採点では最後に出た合計額と突き合わせる。
+ */
+export function totalOf(items = []) {
+  return items.reduce(
+    (acc, it) => ({
+      low: acc.low + (Number(it.low) || 0),
+      fair: acc.fair + (Number(it.fair) || 0),
+      high: acc.high + (Number(it.high) || 0),
+    }),
+    { low: 0, fair: 0, high: 0 },
+  );
+}
+
+/** 実施1回分の持ち込み品。複数点を引く */
+export const drawItems = (products = []) => products.map(drawItem);
+
+/**
  * 提示額と正解の距離から減点を出す。
  *
  * 金額を出していない回は減点しない（0）。
@@ -94,7 +114,7 @@ export const PRICE_PENALTY = { max: 20 };
 
 export function pricePenalty(item, offered) {
   const value = Number(offered);
-  if (!item || !Number.isFinite(value) || value <= 0) {
+  if (!item || !Number.isFinite(value) || value <= 0 || !item.fair) {
     return { penalty: 0, verdict: 'none', message: '金額の提示がなかったため、査定額では減点していません' };
   }
   if (value >= item.low && value <= item.high) {

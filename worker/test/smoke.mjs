@@ -1,7 +1,7 @@
 // Workerのルーティング・認証・LLM連携を、外部APIとD1をスタブして検証する。
 // SQLの正しさはここでは見ない（本番D1に対する疎通で確認する）。
-import worker, { SCORING, computeTotal, parseProducts, stateOf, stripPreamble, stripStageDirections, visibleHistory, visibleItem, withFlagLabels } from '../src/index.js';
-import { drawItem, priceFor, pricePenalty, CONDITIONS, ACCESSORIES } from '../src/items.js';
+import worker, { SCORING, computeTotal, parseProducts, stateOf, stripPreamble, stripStageDirections, visibleHistory, visibleItems, withFlagLabels } from '../src/index.js';
+import { drawItem, drawItems, priceFor, pricePenalty, totalOf, CONDITIONS, ACCESSORIES } from '../src/items.js';
 import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
 import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
@@ -60,6 +60,7 @@ const rows = {
 // ログイン系。パスワードのハッシュはテスト開始時に本物を計算して入れる
 const auth = { company: null, staff: null, session: null };
 let productCount = 1;
+let attachedProducts = []; // シナリオにひも付いた商品
 
 let sqlLog = [];
 let missingRow = null; // '案件が見つかりません' 等を再現したいときにテーブル名を入れる
@@ -94,6 +95,7 @@ function stubDB() {
       }
       if (has('FROM questions q')) return [{ question: 'なぜですか', answer: '客の手元を見ていたので', quote: '引用' }];
       if (has('FROM products WHERE')) return productCount ? [rows.product] : [];
+      if (has('FROM mode_products mp JOIN products p')) return attachedProducts;
       if (has('FROM staff s WHERE s.company')) return [{ ...auth.staff, run_count: 0 }];
       if (has('FROM companies c ORDER BY')) return [{ code: 'clientA', name: 'A社', knowledge_space: 'shared' }];
       return [];
@@ -352,12 +354,18 @@ check('商品: 初期データの列がそろっている',
   SEED_PRODUCTS.every((r) => r.length === 7 && r[3] && r[4] > 0 && r[5] > 0));
 
 // 貼り付けの解釈。Excelはタブ、手打ちはカンマで来る
-const parsed = parseProducts(
+const parsedOut = parseProducts(
   'カテゴリ\tブランド\t型番\t商品名\t新品価格\t買取率\t備考\n' +
   '腕時計\tロレックス\t126610LN\tサブマリーナ\t1,450,000円\t105%\t風防を見る\n' +
   'バッグ,エルメス,,バーキン30,2300000,140,\n' +
   '# コメント行\n\n名前だけの行',
 );
+const parsed = parsedOut.rows;
+// 画面で貼られたのはスペース区切りだった。黙って0件になると原因が分からない
+check('商品: 読めなかった行を返す', parsedOut.bad.includes('名前だけの行'), JSON.stringify(parsedOut.bad));
+const spaced = parseProducts('ハンドバッグ LOUIS VUITTON M60017 ジッピーウォレット ¥84,000 50%');
+check('商品: スペース区切りは読めない行として返す',
+  spaced.rows.length === 0 && spaced.bad.length === 1, JSON.stringify(spaced));
 check('商品: タブ区切りの金額をカンマで割らない', parsed[0]?.newPrice === 1450000, JSON.stringify(parsed[0]));
 check('商品: 買取率の%を外す', parsed[0]?.retention === 105);
 check('商品: カンマ区切りも読む', parsed[1]?.name === 'バーキン30' && parsed[1]?.newPrice === 2300000);
@@ -386,29 +394,89 @@ check('査定: 高すぎも減点', pricePenalty(item, item.fair * 2).verdict ==
 // 「見せに来ただけ」の客では、額を出さないほうが正しい場面がある。出さなかったこと自体は罰さない
 check('査定: 金額を出さなかった回は減点しない', pricePenalty(item, null).penalty === 0);
 
-const withItem = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair }, item);
+const withItem = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair }, [item]);
 check('採点: 品物ありで満点', withItem.total === 100, withItem.total);
-const missed = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair * 0.3 }, item);
+const missed = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: item.fair * 0.3 }, [item]);
 check('採点: 査定額を大きく外すと20点引く', missed.total === 80, missed.total);
 check('採点: 査定額の内訳を返す', missed.price?.verdict === 'low' && missed.breakdown.pricePenalty === 20);
 // 品物のない従来の記録は、配点の意味を変えない
 const noItem = computeTotal({ closed: false, per_axis: [{ deduction: 10 }] });
 check('採点: 品物なしなら従来どおり型で70点', noItem.total === 0 && noItem.breakdown.maxAxisPenalty === 70);
 check('採点: 品物ありなら型は50点に割る',
-  computeTotal({ closed: true, per_axis: [{ deduction: 10 }], offered_price: null }, item).breakdown.maxAxisPenalty === 50);
+  computeTotal({ closed: true, per_axis: [{ deduction: 10 }], offered_price: null }, [item]).breakdown.maxAxisPenalty === 50);
+
+/* --------- 複数点の持ち込み --------- */
+
+const twoItems = drawItems([rows.product, { ...rows.product, id: 'p2', name: 'ジッピーウォレット', new_price: 84000, retention: 50 }]);
+const sum = totalOf(twoItems);
+check('複数点: 合計は各点の足し算', sum.fair === twoItems[0].fair + twoItems[1].fair, JSON.stringify(sum));
+check('複数点: 合計の幅も足し算', sum.low === twoItems[0].low + twoItems[1].low);
+// 店員は点ごとに言うこともまとめて言うこともある。採点は合計で見る
+const twoFair = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: sum.fair }, twoItems);
+check('複数点: 合計ど真ん中なら減点なし', twoFair.total === 100, twoFair.total);
+const twoOff = computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: sum.fair * 0.3 }, twoItems);
+check('複数点: 合計を大きく外すと減点', twoOff.breakdown.pricePenalty === 20);
+// 同じくらいの値段の2点なら、片方を飛ばせば合計から外れる
+const evenPair = drawItems([rows.product, { ...rows.product, id: 'p3', name: 'GMTマスター' }]);
+check('複数点: 同程度の2点で片方しか出さなければ外れる',
+  computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: evenPair[0].fair }, evenPair)
+    .breakdown.pricePenalty > 0);
+// 逆に、150万の時計に1万の財布なら、財布を忘れても合計の幅には収まる。
+// 「片方を見落とした」は金額ではなく判断基準の軸で見るべきもの
+const lopsided = drawItems([rows.product, { ...rows.product, id: 'p4', name: '財布', new_price: 13000, retention: 50 }]);
+check('複数点: 金額差が大きければ小さい方の漏れは金額に出ない',
+  computeTotal({ closed: true, per_axis: [{ deduction: 0 }], offered_price: lopsided[0].fair }, lopsided)
+    .breakdown.pricePenalty === 0);
+check('複数点: 空配列なら品物なし扱い',
+  computeTotal({ closed: true, per_axis: [{ deduction: 0 }] }, []).breakdown.maxAxisPenalty === 70);
+
+/* --------- シナリオに付けた品物をそのまま持ってくる --------- */
+
+// 現場では1人が「バッグと財布」のように複数点を持ってくる。
+// 付いていればそれを全部、付いていなければカテゴリから1点。
+attachedProducts = [
+  rows.product,
+  { ...rows.product, id: 'p9', category: 'バッグ', brand: 'ルイ・ヴィトン', name: 'ジッピーウォレット', new_price: 84000, retention: 50 },
+];
+sqlLog = [];
+const twoRun = await (await post('/api/runs', { modeId: 'mode1' })).json();
+check('持ち込み: 付けた点数ぶん引く', twoRun.itemCount === 2, twoRun.itemCount);
+check('持ち込み: ひも付けを見に行く', sqlLog.some((q) => q.includes('FROM mode_products mp')));
+// 付いているならカテゴリからの抽選はしない
+check('持ち込み: 付いていれば抽選しない', !sqlLog.some((q) => q.includes('FROM products WHERE client = ? AND category')));
+check('持ち込み: 客役に2点とも渡る',
+  systemText(lastClaude).includes('持ち込んだ品物（2点）') && systemText(lastClaude).includes('ジッピーウォレット'),
+  systemText(lastClaude).slice(0, 60));
+check('持ち込み: 2点すべてを持ってきていると伝える',
+  systemText(lastClaude).includes('2点すべてを持ってきています'));
+
+attachedProducts = [];
+const oneRun = await (await post('/api/runs', { modeId: 'mode1' })).json();
+check('持ち込み: 付いていなければ1点を引く', oneRun.itemCount === 1, oneRun.itemCount);
+
+productCount = 0;
+const noneRun = await (await post('/api/runs', { modeId: 'mode1' })).json();
+check('持ち込み: マスタが空なら品物なしで動く', noneRun.itemCount === 0 && noneRun.replyText.length > 0);
+productCount = 1;
 
 /* --------- 受講者に正解を見せない --------- */
 
-check('秘匿: 採点前の品物は伏せる', visibleItem({ item, score: null })?.hidden === true);
-check('秘匿: 採点後は開示する', visibleItem({ item, score: { total: 80 } })?.brand === 'ロレックス');
+check('秘匿: 採点前の品物は伏せる', visibleItems({ items: [item], score: null })[0]?.hidden === true);
+check('秘匿: 採点後は開示する', visibleItems({ items: [item], score: { total: 80 } })[0]?.brand === 'ロレックス');
+check('秘匿: 品物なしなら空', visibleItems({ score: null }).length === 0);
+// item は1点しか持てなかった頃の列。古い記録でも開ける
+check('秘匿: 旧形式の1点記録も読める', visibleItems({ item, score: { total: 1 } })[0]?.brand === 'ロレックス');
 
 const startedWithItem = await (await post('/api/runs', { modeId: 'mode1' })).json();
 check('秘匿: 開始レスポンスに品物を含めない',
-  startedWithItem.item === undefined && startedWithItem.hasItem === true,
+  startedWithItem.items === undefined && startedWithItem.item === undefined,
   JSON.stringify(Object.keys(startedWithItem)));
+check('秘匿: 何点あるかだけ返す', typeof startedWithItem.itemCount === 'number', startedWithItem.itemCount);
 const modesForItem = await (await call('/api/modes')).json();
-check('秘匿: モードはカテゴリだけ返す（品物名は出さない）',
-  modesForItem.modes.every((m) => 'product_category' in m && 'has_fixed_product' in m));
+check('秘匿: モードはカテゴリと点数だけ返す（品物名は出さない）',
+  modesForItem.modes.every((m) => 'product_category' in m && 'attached_count' in m
+    && m.product_name === undefined && m.product_id === undefined),
+  JSON.stringify(modesForItem.modes[0]));
 // 一覧に出す実施回数。落とすと画面が「実施undefined回」になる
 check('モード: 実施回数を返す', modesForItem.modes.every((m) => typeof m.run_count === 'number'),
   JSON.stringify(modesForItem.modes[0]));

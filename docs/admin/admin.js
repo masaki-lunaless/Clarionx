@@ -24,6 +24,7 @@ let cases = [];
 let criteriaList = [];
 let modes = [];
 let current = { caseId: null, case: null, criteriaId: null };
+let pickedProducts = new Set(); // モード作成で選んだ持ち込み品
 
 /* ---------------------------------- タブ --------------------------------- */
 
@@ -626,43 +627,58 @@ async function openModeDialog(criteriaId) {
   if (criteriaId) $('#mode-criteria').value = criteriaId;
   $('#mode-name').value = '';
   $('#mode-scenario').value = '';
+  pickedProducts = new Set();
   await fillProductPickers();
   renderTypeDetail();
   $('#mode-dialog').showModal();
 }
 
 /**
- * 品物の選び方を用意する。
- * カテゴリだけ決めれば実施ごとにランダム、品物まで決めれば毎回同じものになる。
- * 同じ品物で複数人を比べたいときだけ固定する。
+ * 持ち込む品物の選び方。
+ *
+ * 選んだ品物は**全部まとめて**客が持ってくる（「バッグと財布」のような持ち込み）。
+ * 何も選ばなければ、カテゴリから実施ごとに1点を引く。
  */
 async function fillProductPickers() {
   const catSel = $('#mode-category');
-  const prodSel = $('#mode-product');
-  if (!catSel || !prodSel) return;
+  const box = $('#mode-products');
+  if (!catSel || !box) return;
   const data = await api.listProducts().catch(() => null);
-  const products = data?.products || [];
+  const all = data?.products || [];
   const categories = data?.categories || [];
-  catSel.innerHTML = [`<option value="">すべてのカテゴリから</option>`, ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
 
-  const renderProducts = () => {
+  catSel.innerHTML = ['<option value="">すべてのカテゴリから</option>', ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+
+  const renderPicker = () => {
     const cat = catSel.value;
-    const pool = cat ? products.filter((p) => p.category === cat) : products;
-    prodSel.innerHTML = [
-      `<option value="">固定しない（毎回ランダム）</option>`,
-      ...pool.map((p) => `<option value="${esc(p.id)}">${esc([p.brand, p.name].filter(Boolean).join(' '))}</option>`),
-    ].join('');
+    const pool = cat ? all.filter((p) => p.category === cat) : all;
+    box.innerHTML = pool.length
+      ? pool
+          .map(
+            (p) => `<label class="check">
+              <input type="checkbox" value="${esc(p.id)}" ${pickedProducts.has(p.id) ? 'checked' : ''}>
+              <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}<em class="item-meta">${esc(yen(p.new_price))}／${esc(p.retention)}%</em></span>
+            </label>`,
+          )
+          .join('')
+      : '<p class="hint">このカテゴリに商品がありません。商品マスタで登録してください。</p>';
   };
-  renderProducts();
-  catSel.onchange = renderProducts;
+  renderPicker();
+  catSel.onchange = renderPicker;
 
-  if (!products.length) {
-    catSel.innerHTML = '<option value="">商品マスタが空です（設定タブで登録）</option>';
-    prodSel.innerHTML = '<option value="">—</option>';
+  // 選んだものはカテゴリを切り替えても覚えておく
+  box.onchange = (e) => {
+    const cb = e.target.closest('input[type=checkbox]');
+    if (!cb) return;
+    if (cb.checked) pickedProducts.add(cb.value);
+    else pickedProducts.delete(cb.value);
+  };
+
+  if (!all.length) {
+    catSel.innerHTML = '<option value="">商品マスタが空です</option>';
+    box.innerHTML = '<p class="hint">商品マスタが空です。先に商品を登録してください。</p>';
   }
 }
-
-$('#mode-customer').addEventListener('change', renderTypeDetail);
 
 $('#mode-dialog').addEventListener('close', async () => {
   if ($('#mode-dialog').returnValue !== 'ok') return;
@@ -676,7 +692,7 @@ $('#mode-dialog').addEventListener('close', async () => {
       scenario: $('#mode-scenario').value,
       voice: $('#mode-voice').value,
       productCategory: $('#mode-category')?.value || '',
-      productId: $('#mode-product')?.value || '',
+      productIds: [...pickedProducts],
     })
     .catch((err) => {
       alert(`作成できませんでした：${err.message}`);
@@ -759,7 +775,20 @@ $('#mode-customer')?.addEventListener('change', renderTypeDetail);
 /* ------------------------------- 商品マスタ ------------------------------ */
 
 const yen = (v) => `${Math.round(Number(v) || 0).toLocaleString('ja-JP')}円`;
-const productLine = (p) => [p.category, p.brand, p.model, p.name, p.new_price, p.retention, p.notes].join('\t');
+const productLine = (p) =>
+  [p.category, p.brand, p.model, p.name, p.new_price, p.retention, p.notes].join('\t');
+
+// 1件ずつ直せる表にしてある。以前は貼り付け欄しか無く、
+// 1項目を直すのにも全件を貼り直す必要があった（しかも総入れ替えだった）。
+const COLUMNS = [
+  { key: 'category', label: 'カテゴリ', width: '9%' },
+  { key: 'brand', label: 'ブランド', width: '13%' },
+  { key: 'model', label: '型番', width: '13%' },
+  { key: 'name', label: '商品名', width: '21%' },
+  { key: 'new_price', label: '新品価格', width: '11%', num: true },
+  { key: 'retention', label: '買取率%', width: '7%', num: true },
+  { key: 'notes', label: '備考', width: '20%' },
+];
 
 async function loadProducts() {
   const data = await api.listProducts().catch(() => null);
@@ -779,37 +808,101 @@ function renderProducts() {
   const shown = q
     ? products.filter((p) => [p.category, p.brand, p.model, p.name].join(' ').toLowerCase().includes(q))
     : products;
-  status($('#product-count'), `${shown.length}件${q ? `（全${products.length}件中）` : ''}`);
+  status($('#products-status'), `${shown.length}件${q ? `（全${products.length}件中）` : ''}`);
   $('#product-table').innerHTML = `
-    <thead><tr><th>カテゴリ</th><th>ブランド</th><th>型番</th><th>商品名</th><th>新品価格</th><th>買取率</th><th>備考</th></tr></thead>
+    <thead><tr>${COLUMNS.map((c) => `<th style="width:${c.width}">${esc(c.label)}</th>`).join('')}<th></th></tr></thead>
     <tbody>${shown
       .map(
-        (p) => `<tr>
-          <td>${esc(p.category)}</td><td>${esc(p.brand)}</td><td>${esc(p.model)}</td><td>${esc(p.name)}</td>
-          <td class="num">${esc(yen(p.new_price))}</td><td class="num">${esc(p.retention)}%</td>
-          <td>${esc(p.notes)}</td>
+        (p) => `<tr data-id="${esc(p.id)}">
+          ${COLUMNS.map(
+            (c) => `<td class="${c.num ? 'num' : ''}">
+              <input class="cell ${c.num ? 'num' : ''}" data-field="${c.key}" value="${esc(p[c.key] ?? '')}"
+                     ${c.num ? 'type="number" min="0"' : ''}>
+            </td>`,
+          ).join('')}
+          <td><button class="btn btn-ghost btn-sm danger" data-del="${esc(p.id)}">削除</button></td>
         </tr>`,
       )
       .join('')}</tbody>`;
+  if (!products.length) {
+    status($('#products-status'), 'まだ空です。「商品を追加」か「サンプル100点を足す」から始めてください');
+  }
 }
 $('#product-filter').addEventListener('input', renderProducts);
 
-$('#save-products').addEventListener('click', async (e) => {
-  if (!confirm('いま登録されている商品をすべて消して、貼り付けた内容に入れ替えます。よろしいですか。')) return;
-  const el = $('#products-status');
-  const out = await run(e.target, el, '保存中…', () => api.saveProducts($('#products').value));
+// 欄を離れたら保存する。変わっていなければ何もしない
+$('#product-table').addEventListener('change', async (e) => {
+  const input = e.target.closest('.cell');
+  if (!input) return;
+  const id = input.closest('tr')?.dataset.id;
+  const field = input.dataset.field;
+  const key = field === 'new_price' ? 'newPrice' : field;
+  const value = input.type === 'number' ? Number(input.value) : input.value;
+  const before = products.find((p) => p.id === id);
+  if (!before || String(before[field] ?? '') === String(value)) return;
+
+  const out = await run(null, $('#products-status'), '保存中…', () => api.updateProduct(id, { [key]: value }));
+  if (!out) {
+    input.value = before[field] ?? ''; // 失敗したら元に戻す
+    return;
+  }
+  Object.assign(before, out.product);
+  // 価格や率が変わると正解額も変わるので、試算を引き直す
+  if (field === 'new_price' || field === 'retention') await loadProducts();
+  else status($('#products-status'), `${out.product.name} を保存しました`, 'ok');
+});
+
+$('#product-table').addEventListener('click', async (e) => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  const target = products.find((p) => p.id === id);
+  if (!confirm(`「${[target?.brand, target?.name].filter(Boolean).join(' ')}」を削除します。シナリオに付けている場合は外れます。よろしいですか。`)) return;
+  if (await run(null, $('#products-status'), '削除中…', () => api.deleteProduct(id))) {
+    await loadProducts();
+    status($('#products-status'), '削除しました', 'ok');
+  }
+});
+
+$('#add-product').addEventListener('click', async (e) => {
+  const out = await run(e.target, $('#products-status'), '追加中…', () =>
+    api.createProduct({ category: '', brand: '', model: '', name: '新しい商品', newPrice: 10000, retention: 30 }),
+  );
   if (!out) return;
+  $('#product-filter').value = '';
   await loadProducts();
-  status(el, `${out.count}件に入れ替えました`, 'ok');
+  // 追加した行の商品名にそのままカーソルを置く
+  const row = $(`#product-table tr[data-id="${out.product.id}"]`);
+  row?.scrollIntoView({ block: 'center' });
+  const cell = row?.querySelector('[data-field="name"]');
+  cell?.focus();
+  cell?.select();
+});
+
+/* --------- まとめて取り込む（足すだけ） --------- */
+
+$('#import-products').addEventListener('click', async (e) => {
+  const el = $('#import-status');
+  const out = await run(e.target, el, '取り込み中…', () => api.importProducts($('#products').value));
+  const report = $('#import-report');
+  if (!out) {
+    report.innerHTML = '';
+    return;
+  }
+  await loadProducts();
+  status(el, `${out.added}件を足しました${out.skipped ? `（すでにある${out.skipped}件は飛ばしました）` : ''}`, 'ok');
+  // 読めなかった行はそのまま見せる。黙って減っていると原因が分からない
+  report.innerHTML = out.bad?.length
+    ? `<p class="hint error">読み取れなかった行（${out.bad.length}）：区切りが違うか、商品名か新品価格が空です</p>
+       <ul class="list">${out.bad.map((b) => `<li class="item">${esc(b)}</li>`).join('')}</ul>`
+    : '';
 });
 
 $('#seed-products').addEventListener('click', async (e) => {
-  if (!confirm('いま登録されている商品をすべて消して、サンプル100点に入れ替えます。よろしいですか。')) return;
-  const el = $('#products-status');
+  const el = $('#import-status');
   const out = await run(e.target, el, '読み込み中…', () => api.seedProducts());
   if (!out) return;
   await loadProducts();
-  status(el, `${out.count}件を読み込みました。買取率は現場の相場に合わせて直してください`, 'ok');
+  status(el, `${out.added}件を足しました${out.skipped ? `（すでにある${out.skipped}件は飛ばしました）` : ''}。買取率は現場の相場に合わせて直してください`, 'ok');
 });
 
 // Excelへ持っていくため。クリップボードが使えない環境では選択状態にするだけにする
@@ -818,7 +911,7 @@ $('#copy-products').addEventListener('click', async () => {
   box.value = products.map(productLine).join('\n');
   box.select();
   const ok = await navigator.clipboard?.writeText(box.value).then(() => true, () => false);
-  status($('#products-status'), ok ? 'クリップボードにコピーしました' : '欄を選択しました。コピーしてください', 'ok');
+  status($('#import-status'), ok ? 'クリップボードにコピーしました' : '欄を選択しました。コピーしてください', 'ok');
 });
 
 /**

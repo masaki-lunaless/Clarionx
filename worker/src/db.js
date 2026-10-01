@@ -251,7 +251,8 @@ export async function listModes(env, client, company = client) {
   const { results } = await db(env)
     .prepare(
       `SELECT m.*, cr.title AS criteria_title, p.name AS product_name,
-              (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id AND r.client = ?) AS run_count
+              (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id AND r.client = ?) AS run_count,
+              (SELECT COUNT(*) FROM mode_products mp WHERE mp.mode_id = m.id) AS attached_count
          FROM modes m
          JOIN criteria cr ON cr.id = m.criteria_id
          LEFT JOIN products p ON p.id = m.product_id
@@ -304,12 +305,12 @@ export async function createRun(env, client, data) {
   const t = now();
   await db(env)
     .prepare(
-      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, item, staff_id, store, created_at, updated_at)
+      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, items, staff_id, store, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, client, data.modeId || null, data.criteriaId || null, data.trainee || '',
-      data.item ? JSON.stringify(data.item) : null, data.staffId || '', data.store || '', t, t,
+      data.items?.length ? JSON.stringify(data.items) : null, data.staffId || '', data.store || '', t, t,
     )
     .run();
   return id;
@@ -373,7 +374,8 @@ export async function listRuns(env, client, { criteriaId, staffId, limit = 100 }
     ...r,
     history: parse(r.history, []),
     score: parse(r.score, null),
-    item: parse(r.item, null),
+    // item は1点しか持てなかった頃の列。古い記録のために読み続ける
+    items: parse(r.items, null) || [].concat(parse(r.item, null) || []).filter(Boolean),
   }));
 }
 
@@ -480,25 +482,108 @@ export async function drawProduct(env, client, { productId, category } = {}) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-/**
- * 商品マスタをまるごと置き換える。
- * Excelからの貼り付けで一括更新する使い方を想定しているため、差分ではなく総入れ替え。
- */
-export async function replaceProducts(env, client, rows) {
+/** 1件ずつ足す。総入れ替えはしない（消したくないものまで消えるため） */
+export async function createProduct(env, client, r) {
+  const id = uid();
   const t = now();
-  const stmts = [db(env).prepare('DELETE FROM products WHERE client = ?').bind(client)];
+  await db(env)
+    .prepare(
+      `INSERT INTO products (id, client, category, brand, model, name, new_price, retention, notes, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    )
+    .bind(id, client, r.category || '', r.brand || '', r.model || '', r.name, r.newPrice, r.retention, r.notes || '', t, t)
+    .run();
+  return getProduct(env, client, id);
+}
+
+export async function updateProduct(env, client, id, fields) {
+  const cols = {
+    category: 'category', brand: 'brand', model: 'model', name: 'name',
+    newPrice: 'new_price', retention: 'retention', notes: 'notes', active: 'active',
+  };
+  const sets = [];
+  const values = [];
+  for (const [key, col] of Object.entries(cols)) {
+    if (fields[key] === undefined) continue;
+    sets.push(`${col} = ?`);
+    values.push(key === 'active' ? (fields[key] ? 1 : 0) : fields[key]);
+  }
+  if (!sets.length) return getProduct(env, client, id);
+  sets.push('updated_at = ?');
+  values.push(now(), id, client);
+  const res = await db(env)
+    .prepare(`UPDATE products SET ${sets.join(', ')} WHERE id = ? AND client = ?`)
+    .bind(...values)
+    .run();
+  if (!res.meta?.changes) throw new ApiError(404, '商品が見つかりません');
+  return getProduct(env, client, id);
+}
+
+export async function deleteProduct(env, client, id) {
+  await db(env).prepare('DELETE FROM mode_products WHERE product_id = ?').bind(id).run();
+  const res = await db(env).prepare('DELETE FROM products WHERE id = ? AND client = ?').bind(id, client).run();
+  if (!res.meta?.changes) throw new ApiError(404, '商品が見つかりません');
+}
+
+/**
+ * まとめて足す。すでにある商品（ブランド＋型番＋商品名が同じ）は飛ばす。
+ * 取り込みで既存が消えると、手で直した買取率まで巻き戻るため。
+ */
+export async function addProducts(env, client, rows) {
+  const existing = new Set(
+    (await listProducts(env, client)).map((p) => `${p.brand}\u0000${p.model}\u0000${p.name}`),
+  );
+  const t = now();
+  const stmts = [];
+  let skipped = 0;
   for (const r of rows) {
+    const key = `${r.brand || ''}\u0000${r.model || ''}\u0000${r.name}`;
+    if (existing.has(key)) {
+      skipped++;
+      continue;
+    }
+    existing.add(key);
     stmts.push(
       db(env)
         .prepare(
           `INSERT INTO products (id, client, category, brand, model, name, new_price, retention, notes, active, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         )
-        .bind(uid(), client, r.category, r.brand, r.model, r.name, r.newPrice, r.retention, r.notes || '', t, t),
+        .bind(uid(), client, r.category || '', r.brand || '', r.model || '', r.name, r.newPrice, r.retention, r.notes || '', t, t),
     );
   }
+  if (stmts.length) await db(env).batch(stmts);
+  return { added: stmts.length, skipped };
+}
+
+/* ------------------------ シナリオに紐づく商品 --------------------------- */
+
+export async function listModeProducts(env, modeId) {
+  const { results } = await db(env)
+    .prepare(
+      `SELECT p.* FROM mode_products mp JOIN products p ON p.id = mp.product_id
+        WHERE mp.mode_id = ? ORDER BY mp.seq`,
+    )
+    .bind(modeId)
+    .all();
+  return results || [];
+}
+
+/** シナリオに付ける商品を入れ替える。付け外しはここでまとめて行う */
+export async function setModeProducts(env, client, modeId, productIds) {
+  const stmts = [db(env).prepare('DELETE FROM mode_products WHERE mode_id = ?').bind(modeId)];
+  productIds.forEach((pid, i) => {
+    stmts.push(
+      db(env)
+        .prepare(
+          `INSERT INTO mode_products (mode_id, product_id, seq)
+           SELECT ?, id, ? FROM products WHERE id = ? AND client = ?`,
+        )
+        .bind(modeId, i, pid, client),
+    );
+  });
   await db(env).batch(stmts);
-  return rows.length;
+  return listModeProducts(env, modeId);
 }
 
 export async function countProducts(env, client) {

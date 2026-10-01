@@ -512,19 +512,26 @@ ${body}`,
  * 客は品物のことは知っているが、相場は正確には知らない。
  * ここで正解額を渡すと客が自分から答えを言ってしまうので、絶対に渡さない。
  */
-export function itemBlockForCustomer(item) {
-  if (!item) return '';
+export function itemBlockForCustomer(items) {
+  const list = [].concat(items || []).filter(Boolean);
+  if (!list.length) return '';
+  const lines = list
+    .map(
+      (item) => `
+- **${[item.brand, item.name].filter(Boolean).join(' ')}**${item.model ? `（型番 ${item.model}）` : ''}
+  - 状態：${item.condition_label}（${item.condition_desc}）
+  - 付属品：${item.accessory_label}（${item.accessory_desc}）
+  - 手に入れた経緯：${item.history}${item.notes ? `\n  - この品で店員が見るであろう点：${item.notes}` : ''}`,
+    )
+    .join('\n');
+
   return `
 
-【あなたが今日持ち込んだ品物】
-- ${[item.brand, item.name].filter(Boolean).join(' ')}${item.model ? `（型番 ${item.model}）` : ''}
-- 状態：${item.condition_label}（${item.condition_desc}）
-- 付属品：${item.accessory_label}（${item.accessory_desc}）
-- 手に入れた経緯：${item.history}
-${item.notes ? `- この品で店員が見るであろう点：${item.notes}` : ''}
+【あなたが今日持ち込んだ品物（${list.length}点）】${lines}
 
 【品物の扱い方】
 - あなたはこの品物の持ち主です。状態や経緯を聞かれたら、上の内容に沿って答える
+- **${list.length}点すべてを持ってきています。**店員が片方しか見ていなければ、もう片方の話を自分から出してよい
 - **適正な買取額をあなたは知りません。**自分から正確な金額を言わない。
   相場を口にする場合も「ネットで見たら◯万円くらいだった」程度の、当てにならない話にする
 - 型番や状態を、聞かれてもいないのに正確に暗唱しない。客は普通そこまで覚えていない
@@ -553,7 +560,7 @@ ${lines}
 - 条件が1つ増えたら、態度と口調がそのぶん和らぎます。急に全部変わることはありません`;
 }
 
-export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, item, mood, flagsMet }) {
+export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, items, mood, flagsMet }) {
   const type = typeOf(customerType);
   const m = moodOf(mood || type?.opening);
   const scene = sceneOf(type?.scene);
@@ -568,7 +575,7 @@ ${type ? `${type.label}：${type.hint}` : customerType || '一般のお客様'}
 【いまのあなたの心境】
 ${m.label}。${m.style}
 この心境は会話の流れで動きます。相手の対応が良ければ和らぎ、悪ければ硬くなります。${flagBlock(type, flagsMet)}
-${scenario ? `\n【場面設定】\n${scenario}` : ''}${itemBlockForCustomer(item)}
+${scenario ? `\n【場面設定】\n${scenario}` : ''}${itemBlockForCustomer(items)}
 
 【話し方のルール】
 ${dialect ? `- この地域の言葉で話す：${dialect}\n` : ''}- 実際に声に出して読み上げられます。ト書き・状況説明・カッコ書きは一切書かない。セリフだけを書く
@@ -640,20 +647,30 @@ ${type.flags.map((f) => `- ${f.id}：${f.label}（${f.hint}）… ${flagsMet.inc
  * 正解額は Worker が計算した固定値で、AIには「合っていたか」の判断も任せない。
  * AIの仕事は会話から提示額を抜き出すところまで。減点はコードが決める。
  */
-export function itemBlockForScoring(item) {
-  if (!item) return '';
-  return `
-【この回で客が持ち込んだ品物】
-${[item.brand, item.name].filter(Boolean).join(' ')}${item.model ? `（型番 ${item.model}）` : ''}
-状態：${item.condition_label}／付属品：${item.accessory_label}
+export function itemBlockForScoring(items) {
+  const list = [].concat(items || []).filter(Boolean);
+  if (!list.length) return '';
+  const total = list.reduce((a, b) => ({ low: a.low + b.low, high: a.high + b.high }), { low: 0, high: 0 });
+  const yen = (v) => Math.round(v).toLocaleString('ja-JP');
+  const lines = list
+    .map(
+      (i) =>
+        `- ${[i.brand, i.name].filter(Boolean).join(' ')}${i.model ? `（型番 ${i.model}）` : ''}` +
+        ` ／ ${i.condition_label} ／ ${i.accessory_label} ／ 適正 ${yen(i.low)}〜${yen(i.high)}円`,
+    )
+    .join('\n');
 
-この品物の適正買取額は ${item.low.toLocaleString('ja-JP')}円〜${item.high.toLocaleString('ja-JP')}円です。
+  return `
+【この回で客が持ち込んだ品物（${list.length}点）】
+${lines}
+${list.length > 1 ? `合計の適正額：${yen(total.low)}〜${yen(total.high)}円\n` : ''}
 ただし**この金額での加点・減点はしないでください。**査定額の妥当性は別の仕組みで計算します。
-あなたは会話から「店員が提示した金額」を抜き出すことだけを行ってください。
+あなたは会話から「店員が最終的に提示した金額」を抜き出すことだけを行ってください。
+${list.length > 1 ? '点ごとに言っている場合は合計し、まとめて1本で言っている場合はその額を取ります。' : ''}
 `;
 }
 
-export function scoringRequest({ history, criteria, customerType, item, flagsMet = [] }) {
+export function scoringRequest({ history, criteria, customerType, items, flagsMet = [] }) {
   const convo = history.map((m) => `${m.role === 'trainee' ? '店員' : '客'}：${m.text}`).join('\n');
   const type = typeOf(customerType);
 
@@ -679,7 +696,7 @@ export function scoringRequest({ history, criteria, customerType, item, flagsMet
         role: 'user',
         content: `【この客タイプにおける成約の定義】
 ${type?.goal || '客が売却を決めた'}
-${flagBlockForScoring(type, flagsMet)}${itemBlockForScoring(item)}
+${flagBlockForScoring(type, flagsMet)}${itemBlockForScoring(items)}
 【判断基準ドキュメント】
 ${criteria}
 
@@ -698,7 +715,7 @@ ${convo}
         offered_price: {
           type: ['number', 'null'],
           description:
-            '店員が客に提示した買取額（円）。複数出したら最後の額。' +
+            '店員が客に最終的に提示した買取額（円）。複数点なら合計。点ごとに言っていたら足す。' +
             '「◯万円」は円に直す。金額を提示していなければ null。客が言った額は含めない',
         },
         offered_price_quote: { type: 'string', description: '提示額と判断した発言の引用。提示がなければ空文字' },

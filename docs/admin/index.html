@@ -139,36 +139,40 @@
     <div class="content">
       <h2>商品マスタ</h2>
       <p class="hint">
-        ロープレでお客様が持ち込む品物です。<strong>ここに登録した中から1点が実施ごとに選ばれ、状態と正解の買取額がその場で決まります。</strong>
-        受講者には採点が終わるまで品物も正解額も見えません。
-      </p>
-      <p class="hint">
-        1行1件、<code>カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考</code> の順。Excelからそのまま貼り付けられます。
+        ロープレでお客様が持ち込む品物です。シナリオに付けた品物がそのまま出ます。付けていなければカテゴリから1点が選ばれます。
+        状態と正解の買取額は実施ごとに決まり、<strong>受講者には採点が終わるまで見えません。</strong>
       </p>
       <p class="hint">
         <strong>買取率</strong>は「美品の状態で、新品価格の何％で買い取るか」です。ロレックスや終売の酒は100を超え、
         量販の家電やファッションジュエリーは10〜20になります。<strong>ここが実際の相場とずれると正解額もずれます。</strong>
-        サンプルの数字は初期値なので、現場の感覚に合わせて直してください。
       </p>
 
       <div class="row row-actions">
         <input class="input" id="product-filter" placeholder="絞り込み（ブランド・商品名・カテゴリ）">
-        <span class="status" id="product-count"></span>
-      </div>
-      <div class="table-wrap">
-        <table class="records" id="product-table"></table>
+        <button class="btn btn-primary" id="add-product">＋ 商品を追加</button>
+        <span class="status" id="products-status"></span>
       </div>
 
+      <div class="table-wrap">
+        <table class="records editable" id="product-table"></table>
+      </div>
+      <p class="hint">セルをそのまま書き換えられます。欄を離れると保存されます。</p>
+
       <details class="block">
-        <summary>まとめて貼り付けて入れ替える</summary>
-        <p class="hint"><strong>入れ替えです。</strong>いま入っている商品が消えて、この欄の内容になります。</p>
+        <summary>まとめて取り込む（Excelから貼り付け）</summary>
+        <p class="hint">
+          1行1件、<code>カテゴリ / ブランド / 型番 / 商品名 / 新品価格 / 買取率% / 備考</code> の順。
+          <strong>タブ区切り（Excelからの貼り付け）かカンマ区切り</strong>にしてください。スペース区切りは読めません。<br>
+          <strong>足すだけです。</strong>いま入っている商品は消えません。同じ商品（ブランド＋型番＋商品名）は飛ばします。
+        </p>
         <textarea class="input textarea-lg" id="products" placeholder="腕時計&#9;ロレックス&#9;126610LN&#9;サブマリーナ デイト&#9;1450000&#9;105&#9;研磨歴を見る"></textarea>
         <div class="row row-actions">
-          <button class="btn btn-primary" id="save-products">この内容で入れ替える</button>
-          <button class="btn" id="copy-products">いまの内容を書き出す</button>
-          <button class="btn" id="seed-products">サンプル100点を読み込む</button>
-          <span class="status" id="products-status"></span>
+          <button class="btn btn-primary" id="import-products">この内容を足す</button>
+          <button class="btn" id="seed-products">サンプル100点を足す</button>
+          <button class="btn btn-ghost" id="copy-products">いまの内容を書き出す</button>
+          <span class="status" id="import-status"></span>
         </div>
+        <div id="import-report"></div>
       </details>
 
       <details class="block">
@@ -189,6 +193,7 @@
       </details>
     </div>
   </section>
+
 
   <!-- ブランド・用語 -->
   <section class="panel" id="panel-glossary">
@@ -374,10 +379,14 @@
     <label class="label">持ち込む品物のカテゴリ
       <select class="input" id="mode-category"></select>
     </label>
-    <label class="label">品物を固定する（任意）
-      <select class="input" id="mode-product"></select>
+    <label class="label">持ち込む品物を決める（任意・複数可）
+      <div class="picker" id="mode-products"></div>
     </label>
-    <p class="hint">固定しなければ、選んだカテゴリの中から実施ごとにランダムで選ばれます。<strong>どちらの場合も、受講者には採点まで品物が見えません。</strong>モード名に品物名を入れると意味が無くなるので注意してください。</p>
+    <p class="hint">
+      <strong>選んだ品物を全部まとめて持ってきます</strong>（「バッグと財布」のような持ち込み）。
+      何も選ばなければ、上のカテゴリから実施ごとに1点がランダムで選ばれます。<br>
+      どちらの場合も<strong>受講者には採点まで品物が見えません。</strong>モード名に品物名を入れると意味が無くなるので注意してください。
+    </p>
     <div class="row row-end">
       <button class="btn btn-ghost" value="cancel">キャンセル</button>
       <button class="btn btn-primary" value="ok">作る</button>

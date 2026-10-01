@@ -63,8 +63,13 @@ export const api = {
 
   // マスタと権限の管理（管理者のみ）
   listProducts: () => request('GET', '/api/products'),
-  saveProducts: (text) => request('POST', '/api/products', { text }),
+  createProduct: (data) => request('POST', '/api/products', data),
+  updateProduct: (id, data) => request('PATCH', `/api/products/${id}`, data),
+  deleteProduct: (id) => request('DELETE', `/api/products/${id}`),
+  importProducts: (text) => request('POST', '/api/products/import', { text }),
   seedProducts: () => request('POST', '/api/products/seed', {}),
+  modeProducts: (id) => request('GET', `/api/modes/${id}/products`),
+  setModeProducts: (id, productIds) => request('POST', `/api/modes/${id}/products`, { productIds }),
   quote: (id, condition, accessory) =>
     request('GET', `/api/products/${id}/quote?condition=${encodeURIComponent(condition)}&accessory=${encodeURIComponent(accessory)}`),
   listStaff: (company) => request('GET', `/api/staff${company ? `?company=${encodeURIComponent(company)}` : ''}`),
