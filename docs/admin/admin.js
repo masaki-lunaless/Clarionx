@@ -745,7 +745,9 @@ function renderTypeDetail() {
     box.innerHTML = '';
     return;
   }
+  const sceneLabel = (config.scenes || []).find((x) => x.id === t.scene)?.label || '';
   box.innerHTML = `
+    ${sceneLabel ? `<span class="pill yes">${esc(sceneLabel)}</span>` : ''}
     <span class="pill ${t.track === 'reversal' ? '' : 'yes'}">${t.track === 'reversal' ? '大逆転' : '通常'}</span>
     <span>${esc(t.hint.split('\n')[0])}</span>
     <span><strong>折れる条件：</strong>${(t.flags || []).map((f) => esc(f.label)).join(' ／ ')}</span>

@@ -6,7 +6,7 @@ import { hashPassword, hasRole, normalizeCode, sha256 } from '../src/auth.js';
 import { SEED_PRODUCTS } from '../src/seed-products.js';
 import { cleanTranscript } from '../src/audio.js';
 import { parseGlossary } from '../src/db.js';
-import { CUSTOMER_TYPES, MOODS, glossaryBlock, roleplaySystemPrompt, voiceDirection } from '../src/prompts.js';
+import { CUSTOMER_TYPES, MOODS, SCENES, glossaryBlock, roleplaySystemPrompt, voiceDirection } from '../src/prompts.js';
 
 /* ------------------------------- D1スタブ -------------------------------- */
 
@@ -534,6 +534,30 @@ check('トラック: 全型に開始時の心境がある',
   CUSTOMER_TYPES.every((t) => MOODS.some((m) => m.id === t.opening)));
 check('トラック: 不満客は苛立ちから始まる', CUSTOMER_TYPES.find((t) => t.id === 'complaint').opening === 'irritated');
 check('トラック: 見せに来ただけは乗り気から始まる', CUSTOMER_TYPES.find((t) => t.id === 'showoff').opening === 'engaged');
+
+/* --------- 場面：買取であって販売ではない --------- */
+
+// 最初に8つの型を「一般的な接客」として書いたせいで、買取の判断基準に
+// 販売の客（店の商品を見せてほしい客）が立つ事故が起きた。その再発を止める。
+check('場面: 全型に来店の目的がある', CUSTOMER_TYPES.every((t) => SCENES[t.scene]),
+  CUSTOMER_TYPES.filter((t) => !SCENES[t.scene]).map((t) => t.label).join(','));
+check('場面: いまはすべて買取', CUSTOMER_TYPES.every((t) => t.scene === 'kaitori'));
+
+const sellerPrompt = roleplaySystemPrompt({ customerType: 'undecided' });
+check('場面: 買取カウンターだと先に言う', sellerPrompt.includes('ここは買取カウンターです'));
+check('場面: 買う側の言い方を禁じる', sellerPrompt.includes('店の商品を買う側の言い方は絶対にしない'));
+check('場面: 役柄より前に場面が来る',
+  sellerPrompt.indexOf('【場面】') < sellerPrompt.indexOf('【あなたの役柄】'));
+
+// 型の文面そのものに販売の語が残っていないか。
+// 「欲しい」「お決まりですか」「値引き」は買い手側の言葉で、これが残っていると
+// 客役が店の商品を選びに来てしまう
+const SELLING_WORDS = ['欲しい', 'お決まり', '値引き', '購入', '見ているだけ'];
+for (const t of CUSTOMER_TYPES) {
+  const text = [t.hint, t.goal, t.breaker, ...t.flags.map((f) => `${f.label}${f.hint}`)].join(' ');
+  const hit = SELLING_WORDS.filter((w) => text.includes(w));
+  check(`場面: ${t.label} に販売の言葉が残っていない`, hit.length === 0, hit.join(','));
+}
 
 /* --------- 声が心境で変わる --------- */
 

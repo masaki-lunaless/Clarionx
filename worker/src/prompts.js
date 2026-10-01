@@ -4,6 +4,26 @@
 // voice: 読み上げの演技指示（OpenAI TTSのinstructions）、intensity: 感情の強さ（Aivisのemotional_intensity）
 // goal: この客タイプにおける「成約」の判定基準。採点で二値の固定ポイントを出すのに使う
 /**
+ * 来店の目的。客役がどちらの立場かを、型より先に固定する。
+ *
+ * 最初に8つの型を「一般的な接客」として書いたせいで、買取の判断基準に
+ * 販売の客（店の商品を見せてほしい客）が立つ事故が起きた。
+ * 型の文面を直すだけでは、次に型を足したときに同じことが起きる。
+ * 場面をここで明示し、型はそのどれかに属する形にしてある。
+ */
+export const SCENES = {
+  kaitori: {
+    label: '買取',
+    frame: `ここは買取カウンターです。あなたは**自分の持ち物を売るかどうかを決めに来た客**です。
+- 品物はあなたが持ち込みました。店の商品ではありません
+- 「見せてください」「どっちにしようかな」のような、**店の商品を買う側の言い方は絶対にしない**
+- 店員があなたの品物を見て、査定額を出す側です`,
+  },
+};
+
+export const sceneOf = (id) => SCENES[id] || SCENES.kaitori;
+
+/**
  * 客の心境。毎ターンAIに現在地を返させ、次のターンの口調と読み上げの演技に反映する。
  *
  * これが無いと、不満客は20ターン目でも1ターン目と同じ声で苛立ったままになる。
@@ -56,63 +76,63 @@ export const moodOf = (id) => MOODS.find((m) => m.id === id) || MOODS[1];
  */
 export const CUSTOMER_TYPES = [
   {
-    id: 'undecided', label: '迷い客', track: 'standard', opening: 'guarded',
-    hint: '欲しい気持ちはあるが決め手がなく、質問が多い。急かされると引く。',
+    id: 'undecided', label: '手放すか迷っている', track: 'standard', scene: 'kaitori', opening: 'guarded',
+    hint: '売ると決めきれていない。「とりあえず見てもらおうと思って」と言う。金額を聞いても即答を避ける。急かされると「また今度にします」と引く。',
     voice: '日本語で、迷いながら話す客。語尾を伸ばし気味に、考え込む間を取って',
     intensity: 1,
-    goal: '客がその場で購入・売却を決めた。または次回の来店日を具体的に約束した',
+    goal: '客がその場で売却を決めた。または次回の来店日を具体的に約束した',
     flags: [
-      { id: 'named', label: '迷いの正体が言葉になった', hint: '何が引っかかっているのかが、客自身の口から出た' },
-      { id: 'narrowed', label: '選択肢が2つ以下に絞られた', hint: '比べる対象が減り、客が比較をやめた' },
+      { id: 'named', label: '迷いの正体が言葉になった', hint: '金額なのか、思い入れなのか、時期なのかが客自身の口から出た' },
+      { id: 'kept_path', label: '売らずに持ち帰った先の話ができた', hint: '持っていても使わない／保管の手間、などが見えた' },
       { id: 'own_reason', label: '今日決めてよい理由を自分で言った', hint: '急かされてではなく、自分の言葉で' },
     ],
-    breaker: '選択肢を増やす。「お決まりですか」と急かす',
+    breaker: '「今日お決めいただければ」と急かす。迷いを聞かずに金額を上げて押す',
   },
   {
-    id: 'price', label: '価格重視', track: 'standard', opening: 'neutral',
-    hint: '真っ先に値段を聞く。他店比較を口にする。値引きを引き出そうとする。',
+    id: 'price', label: '金額だけで決める', track: 'standard', scene: 'kaitori', opening: 'neutral',
+    hint: '開口一番に「いくらになりますか」。他店の査定額を持っている。額に満足しなければその場で帰ろうとする。',
     voice: '日本語で、値段の話になると少し前のめりになる客。早口で、探るような調子で',
     intensity: 1.1,
-    goal: '客が値引き以外の理由に納得して購入・売却を決めた',
+    goal: '客が金額以外の理由にも納得して売却を決めた',
     flags: [
-      { id: 'other_axis', label: '値段以外の判断材料を受け取った', hint: '状態・保証・早さ・手間など、金額でない軸が1つ刺さった' },
-      { id: 'compare_broken', label: '他店比較の前提が崩れた', hint: '条件が違うと客が理解した' },
-      { id: 'own_reason', label: 'この店で決める理由を自分で口にした', hint: '「安いから」以外の理由' },
+      { id: 'other_axis', label: '金額以外の判断材料を受け取った', hint: '入金の早さ・手数料・手間・安心など、額でない軸が1つ刺さった' },
+      { id: 'compare_broken', label: '他店査定の前提が違うと分かった', hint: '状態の見方・付属品・手数料の扱いが違うと客が理解した' },
+      { id: 'own_reason', label: 'この店で売る理由を自分で口にした', hint: '「高いから」以外の理由' },
     ],
-    breaker: '値引きだけで応じる。言われた額にそのまま合わせる',
+    breaker: '他店より少し上の額を出すだけで終わらせる。根拠を言わずに金額だけ動かす',
   },
   {
-    id: 'silent', label: '寡黙', track: 'standard', opening: 'guarded',
-    hint: '相槌は打つが自分からは話さない。短い返事しか返さない。見ているだけ、と言いがち。',
+    id: 'silent', label: '寡黙', track: 'standard', scene: 'kaitori', opening: 'guarded',
+    hint: '品物をカウンターに置くだけで、自分からは事情を話さない。質問にも「はい」「別に」としか返さない。',
     voice: '日本語で、口数の少ない客。抑揚を抑えて、そっけなく短く',
     intensity: 0.6,
-    goal: '客が自分から要望を口にし、購入・売却を決めた',
+    goal: '客が自分から要望や事情を口にし、売却を決めた',
     flags: [
       { id: 'waited', label: '店員が沈黙に耐えた', hint: '間を埋めず、客が口を開くまで待った' },
       { id: 'open_answer', label: 'はい/いいえで終わらない答えをした', hint: '自分の言葉が出た' },
-      { id: 'asked', label: '自分から要望や条件を口にした', hint: '客の側から一歩出た' },
+      { id: 'asked', label: '自分から要望や事情を口にした', hint: '急ぎ・希望額・手放す理由など、客の側から一歩出た' },
     ],
     breaker: '矢継ぎ早に質問する。沈黙をこちらの話で埋める',
   },
   {
-    id: 'expert', label: '知識豊富', track: 'standard', opening: 'neutral',
-    hint: '下調べ済み。スペックや相場を把握しており、店員を試す質問をする。',
+    id: 'expert', label: '相場を調べてきた', track: 'standard', scene: 'kaitori', opening: 'neutral',
+    hint: '型番も相場も調べてきている。「これ、ネットだと◯万円で売れてますよね」と言う。店員の目利きを試す。',
     voice: '日本語で、知識のある客。落ち着いた低めの調子で、試すように',
     intensity: 0.9,
-    goal: '客が店員の見立てを認め、購入・売却を決めた',
+    goal: '客が店員の見立てを認め、売却を決めた',
     flags: [
       { id: 'honest', label: '知らないことを誤魔化さずに認めた', hint: '知ったかぶりをしなかった' },
       { id: 'new_info', label: '客が知らなかった情報を渡した', hint: '調べても出てこない、現場の側の話' },
       { id: 'assessed', label: '客の見立てを根拠つきで評価した', hint: '同意でも異議でも、どこを見てそう言うかを示した' },
     ],
-    breaker: '知ったかぶりをする。一般論で流す',
+    breaker: '知ったかぶりをする。一般論で流す。相場サイトの数字を根拠なく否定する',
   },
   {
-    id: 'complaint', label: '不満・クレーム気味', track: 'standard', opening: 'irritated',
-    hint: '過去の対応や査定額に納得がいっていない。最初は語気が強い。',
+    id: 'complaint', label: '不満・クレーム気味', track: 'standard', scene: 'kaitori', opening: 'irritated',
+    hint: '前回の査定額や対応に納得がいっていない。最初は語気が強い。',
     voice: '日本語で、納得していない客。語気を強めて、苛立ちをにじませて',
     intensity: 1.5,
-    goal: '客の不満が解消され、購入・売却を決めた。または改めて来店する意思を示した',
+    goal: '客の不満が解消され、売却を決めた。または改めて来店する意思を示した',
     flags: [
       { id: 'heard_out', label: '遮られずに最後まで言えた', hint: '途中で説明や謝罪をかぶせられなかった' },
       { id: 'restated', label: '何への不満かを正確に言い直された', hint: 'ずれた要約をされなかった' },
@@ -121,7 +141,7 @@ export const CUSTOMER_TYPES = [
     breaker: '早々に謝って済ませる。言い訳をする。担当を替えて逃げる',
   },
   {
-    id: 'kaitori', label: '買取相談', track: 'standard', opening: 'guarded',
+    id: 'kaitori', label: '買取相談', track: 'standard', scene: 'kaitori', opening: 'guarded',
     hint: '売るつもりはあるが金額次第。他店の査定額を持っている。思い入れのある品。',
     voice: '日本語で、手放すか迷っている客。少し名残惜しそうに、慎重に',
     intensity: 1.1,
@@ -134,11 +154,11 @@ export const CUSTOMER_TYPES = [
     breaker: '来歴を聞かずに金額から入る。他店より少し高いだけで押す',
   },
   {
-    id: 'accompanied', label: '同伴者あり', track: 'standard', opening: 'neutral',
-    hint: '家族や友人と一緒。決定権が本人だけにない。同伴者の一言で気持ちが動く。',
+    id: 'accompanied', label: '同伴者あり', track: 'standard', scene: 'kaitori', opening: 'neutral',
+    hint: '夫婦や親子で来ている。品物の持ち主と、売ることに意見を持つ人が別。同伴者の一言で気持ちが動く。',
     voice: '日本語で、連れの様子をうかがいながら話す客。会話の相手が二人いるような調子で',
     intensity: 1,
-    goal: '同伴者を含めて合意し、購入・売却を決めた',
+    goal: '同伴者を含めて合意し、売却を決めた',
     flags: [
       { id: 'included', label: '同伴者にも話が向けられた', hint: '視線・呼びかけ・質問が同伴者にも渡った' },
       { id: 'concern_out', label: '同伴者の懸念が表に出た', hint: '連れが黙ったままではなくなった' },
@@ -150,6 +170,7 @@ export const CUSTOMER_TYPES = [
     id: 'showoff',
     label: '見せに来ただけ',
     track: 'reversal',
+    scene: 'kaitori',
     opening: 'engaged',
     hint: `売る気がない。自分の持ち物を見てもらい、価値と目利きを認めてほしくて来ている。
 査定額を聞くこともあるが、値段を知りたいのではなく「自分の見立ては正しかったか」の確認。
@@ -524,7 +545,7 @@ function flagBlock(type, flagsMet = []) {
   return `
 
 【あなたが折れる条件】
-${reversal ? 'あなたは今日売るつもりがありません。' : ''}次の3つが揃ったときだけ、${reversal ? '自分から「じゃあ、お願いしようかな」と言い出します' : '購入・売却を決める気になります'}。揃わないうちは決めません。
+${reversal ? 'あなたは今日売るつもりがありません。' : ''}次の3つが揃ったときだけ、${reversal ? '自分から「じゃあ、お願いしようかな」と言い出します' : '売却を決める気になります'}。揃わないうちは決めません。
 ${lines}
 
 - 条件が揃ったかどうかは、あなた自身が心の中で判断します。**口に出して数えない**
@@ -535,7 +556,11 @@ ${lines}
 export function roleplaySystemPrompt({ customerType, scenario, criteria, dialect, item, mood, flagsMet }) {
   const type = typeOf(customerType);
   const m = moodOf(mood || type?.opening);
+  const scene = sceneOf(type?.scene);
   return `あなたは接客ロールプレイの「お客様」役です。店員役の相手（研修受講者）と、音声で会話しています。
+
+【場面】
+${scene.frame}
 
 【あなたの役柄】
 ${type ? `${type.label}：${type.hint}` : customerType || '一般のお客様'}
@@ -653,7 +678,7 @@ export function scoringRequest({ history, criteria, customerType, item, flagsMet
       {
         role: 'user',
         content: `【この客タイプにおける成約の定義】
-${type?.goal || '客が購入・売却を決めた'}
+${type?.goal || '客が売却を決めた'}
 ${flagBlockForScoring(type, flagsMet)}${itemBlockForScoring(item)}
 【判断基準ドキュメント】
 ${criteria}

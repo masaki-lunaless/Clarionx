@@ -19,6 +19,7 @@ import * as db from './db.js';
 import {
   CUSTOMER_TYPES,
   MOODS,
+  SCENES,
   moodOf,
   roleplayTurnRequest,
   typeOf,
@@ -368,13 +369,14 @@ const routes = [
     'GET',
     '/api/config',
     async ({ env, auth }) => ({
-      customerTypes: CUSTOMER_TYPES.map(({ id, label, hint, track, flags, breaker }) => ({
-        id, label, hint, track,
+      customerTypes: CUSTOMER_TYPES.map(({ id, label, hint, track, scene, flags, breaker }) => ({
+        id, label, hint, track, scene,
         // 条件の「中身」は教材づくりの材料。受講者にも見えるが、
         // 会話中にどれが立っているかは伏せてある（そちらが答え）
         flags: flags.map(({ id: fid, label: flabel }) => ({ id: fid, label: flabel })),
         breaker,
       })),
+      scenes: Object.entries(SCENES).map(([id, sc]) => ({ id, label: sc.label })),
       tracks: [
         { id: 'standard', label: '通常', hint: '買う／売ると決めに来ている客。条件が揃えば決める' },
         { id: 'reversal', label: '大逆転', hint: '売る気がない状態から始まる。条件が揃ったときだけ翻る' },
