@@ -88,7 +88,6 @@ export const api = {
   createCase: (data) => request('POST', '/api/cases', data),
   updateCase: (id, data) => request('PATCH', `/api/cases/${id}`, data),
   deleteCase: (id) => request('DELETE', `/api/cases/${id}`),
-  transcribe: (id, audio, payload, filename) => upload(`/api/cases/${id}/transcribe`, { audio, payload, filename }),
   assess: (id) => request('POST', `/api/cases/${id}/assess`, {}),
   format: (id) => request('POST', `/api/cases/${id}/format`, {}),
   detect: (id) => request('POST', `/api/cases/${id}/detect`, {}),
@@ -108,7 +107,8 @@ export const api = {
   createMode: (data) => request('POST', '/api/modes', data),
   deleteMode: (id) => request('DELETE', `/api/modes/${id}`),
   listRuns: (criteriaId) => request('GET', `/api/runs${criteriaId ? `?criteriaId=${criteriaId}` : ''}`),
-  startRun: (modeId, trainee) => request('POST', '/api/runs', { modeId, trainee }),
+  // situation は開始前の差し替え（客タイプ・品物・場面設定）。その回だけ効く
+  startRun: (modeId, trainee, situation = {}) => request('POST', '/api/runs', { modeId, trainee, ...situation }),
   // timing は「間」の計測値。画面には出さないが、採点の材料として送る
   turn: (runId, { text, audio, filename, payload, timing }) =>
     audio

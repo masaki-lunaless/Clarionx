@@ -459,6 +459,26 @@ const noneRun = await (await post('/api/runs', { modeId: 'mode1' })).json();
 check('持ち込み: マスタが空なら品物なしで動く', noneRun.itemCount === 0 && noneRun.replyText.length > 0);
 productCount = 1;
 
+/* --------- 開始前にシチュエーションを変える --------- */
+
+// モードの既定を、その回だけ差し替える。モードそのものは変えない。
+attachedProducts = [];
+const swapped = await (await post('/api/runs', {
+  modeId: 'mode1', customerType: 'showoff', scenario: '閉店まぎわ', productIds: ['prod1'],
+})).json();
+check('差し替え: 変えた客タイプで始まる', swapped.mode.customer_type === 'showoff', swapped.mode.customer_type);
+check('差し替え: 変えた場面設定が返る', swapped.mode.scenario === '閉店まぎわ');
+check('差し替え: 変えた客タイプで客役が動く',
+  systemText(lastClaude).includes('見せに来ただけ'), systemText(lastClaude).slice(0, 80));
+check('差し替え: 選んだ品物を引く', swapped.itemCount === 1);
+// 保存されるのは回のほう。モードは元のまま
+check('差し替え: モード自体は変えない',
+  (await (await call('/api/modes')).json()).modes[0].customer_type === 'complaint');
+
+// 知らない客タイプは無視して、モードの既定に落ちる
+const bogus = await (await post('/api/runs', { modeId: 'mode1', customerType: 'nosuch' })).json();
+check('差し替え: 不正な客タイプは既定に落ちる', bogus.mode.customer_type === 'complaint', bogus.mode.customer_type);
+
 /* --------- 受講者に正解を見せない --------- */
 
 check('秘匿: 採点前の品物は伏せる', visibleItems({ items: [item], score: null })[0]?.hidden === true);

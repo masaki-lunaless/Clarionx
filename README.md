@@ -112,6 +112,17 @@ OpenAI TTSの `instructions`、Aivisの `emotional_intensity` と `speaking_rate
 
 構造化に失敗したときは素のテキスト生成に落ちて会話を続ける。心境は直前のまま据え置く。
 
+### 開始前のシチュエーション差し替え
+
+`POST /api/runs` は `customerType` / `scenario` / `productIds` / `category` を受け、
+その回だけモードの既定を上書きする。採点も上書き後の客タイプで行うため、
+モードを見に行くだけでは足りず `runs.customer_type` / `runs.scenario` に持たせている
+（`listRuns` は `COALESCE(r.customer_type, m.customer_type)`）。
+
+品物は受講者にも選ばせるが、`GET /api/products` は指導者未満に対して
+`new_price` と `retention` を落として返す。現場でも品物は目の前にあり、
+分からないのは「いくらで買うか」のほうなので、相場表だけ伏せれば足りる。
+
 ### 間（沈黙）の計測
 
 「黙って待つ」は判断基準によく出てくるが、書き起こしだけでは跡形もなく消える。
@@ -250,17 +261,23 @@ npx wrangler deploy
 
 別のプロバイダを足すときは `PROVIDERS` に `{ enabled, voices, synthesize }` を持つエントリを1つ追加するだけでよい。
 
-## 音声の準備（監視カメラ映像から）
+## 書き起こしの作り方（アプリの外）
+
+**アプリから音声を取り込む機能は外した。**ブラウザ内でのDSPと分割、Whisperへの投げ分けまで
+持っていたが、監視カメラの音源では精度が出ず、原因（マイク位置・書き出し設定・無音）を
+追う手間のほうが大きかった。書き起こしは使い慣れたツールで作って、①に貼る。
+
+映像から音声だけ抜きたいときはこれが使える。
 
 ```bash
 ./tools/extract-audio.sh ./recordings ./audio
 ```
 
-映像は不要なので音声だけ抜く。16kHz・モノラルWAVなら70時間でも8GB程度。
-Whisper APIの上限が1ファイル25MBなので、既定で15分ごとに分割する（`SEGMENT_SECONDS` で変更可）。
+16kHz・モノラルWAVなら70時間でも8GB程度。Whisper APIの上限が1ファイル25MBなので、
+既定で15分ごとに分割する（`SEGMENT_SECONDS` で変更可）。
 
-監視カメラのマイクは天井付け・無指向性で距離があるため、専用レコーダーより精度は落ちる。
-書き起こしは目視で直してから①に流すこと。
+ロープレ中の受講者の発話は、いまも Whisper で聞き取っている（`/api/runs/:id/turn`）。
+外したのは案件に音声を取り込む側だけ。
 
 ## 運用上の注意
 

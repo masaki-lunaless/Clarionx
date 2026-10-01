@@ -96,6 +96,28 @@
             <button class="btn btn-primary" id="start-run">開始</button>
           </div>
 
+          <details class="block" id="situation">
+            <summary>シチュエーションを変える</summary>
+            <p class="hint">この回だけ設定を差し替えます。モードそのものは変わりません。</p>
+            <div class="fb-grid">
+              <label class="label">客のタイプ
+                <select class="input" id="run-customer"></select>
+              </label>
+              <label class="label">品物のカテゴリ
+                <select class="input" id="run-category"></select>
+              </label>
+            </div>
+            <label class="label">持ち込む品物（複数可・選ばなければカテゴリからランダム）
+              <div class="picker" id="run-products"></div>
+            </label>
+            <label class="label">場面設定
+              <textarea class="input" id="run-scenario" rows="2" placeholder="例：閉店30分前。他店で3万円と言われている。"></textarea>
+            </label>
+            <div class="row row-actions">
+              <button class="btn btn-ghost btn-sm" id="situation-reset">モードの設定に戻す</button>
+            </div>
+          </details>
+
           <div class="convo" id="convo"></div>
 
           <div class="composer">

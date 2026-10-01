@@ -8,7 +8,6 @@
 // 片方でログインすれば、もう片方も入れる。
 
 import { api } from '../api.js';
-import { DEFAULTS, canExtract, extractChunks, fmtDuration } from '../media.js';
 import { settings } from '../store.js';
 import { $, $$, debounce, esc, run, status } from '../ui.js';
 
@@ -264,120 +263,6 @@ bindCaseField('#case-transcript', 'transcript');
 let lastExtract = null;
 
 /** 取り込んだ音声の測定値と、処理後の音声そのものを出す。耳で原因を判断できるように */
-function renderExtractReport(file, extracted, note) {
-  const box = $('#extract-report');
-  if (!box) return;
-  const d = extracted?.diagnostics || {};
-  box.insertAdjacentHTML('beforeend', `<div class="card">
-    <div class="card-head"><h3>取り込みの結果：${esc(file.name)}</h3></div>
-    ${note ? `<p class="why">${esc(note)}</p>` : ''}
-    <div class="diag">${Object.entries(d)
-      .map(([k, v]) => `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`)
-      .join('')}</div>
-    <p class="hint">下がWhisperに送っている音声そのものです。聞こえ方を確認してください。</p>
-    <div class="chunk-players" id="chunk-players"></div>
-    ${extracted ? '<div class="row row-end"><button class="btn btn-ghost btn-sm" id="dl-chunks">処理後の音声を保存</button></div>' : ''}
-  </div>`);
-  if (!extracted) return;
-  const players = $('#chunk-players');
-  extracted.chunks.slice(0, 3).forEach((c, i) => {
-    const el = document.createElement('audio');
-    el.controls = true;
-    el.src = URL.createObjectURL(c);
-    el.title = `${i + 1}個目`;
-    players.append(el);
-  });
-  $('#dl-chunks').addEventListener('click', () => {
-    extracted.chunks.forEach((c, i) => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(c);
-      a.download = `${file.name.replace(/\.[^.]+$/, '')}_part${i + 1}.wav`;
-      a.click();
-    });
-  });
-}
-
-/**
- * 1ファイルを取り込む。抽出 → 分割 → 順に書き起こして案件へ追記。
- * 分割録音を複数まとめて入れられるよう、1ファイル分を関数にしてある。
- */
-async function importOneFile(file, el, prefix) {
-  let extracted;
-  try {
-    extracted = await extractChunks(file, {
-      onProgress: (msg) => status(el, `${prefix}${file.name}：${msg}`),
-      ...extractOptions(),
-    });
-  } catch (err) {
-    renderExtractReport(file, null, err.message);
-    return { ok: false, error: err.message };
-  }
-
-  renderExtractReport(file, extracted);
-  const { chunks, seconds, originalSeconds, gain } = extracted;
-  const trimmed = originalSeconds - seconds;
-  const note =
-    (trimmed > 30 ? `（無音 ${fmtDuration(trimmed)} を除去` : '（') +
-    (gain > 1.05 ? `${trimmed > 30 ? '／' : ''}音量を${gain.toFixed(1)}倍に調整` : '') +
-    '）';
-
-  for (const [i, chunk] of chunks.entries()) {
-    status(el, `${prefix}${file.name}：書き起こし中… ${i + 1}/${chunks.length} 個目 ${note}`);
-    try {
-      const data = await api.transcribe(current.caseId, chunk, { vocabulary: settings.get('vocabulary') }, `part${i + 1}.wav`);
-      current.case = data.case;
-      $('#case-transcript').value = data.case.transcript;
-    } catch (err) {
-      renderExtractReport(file, extracted, '送った音声は下で再生できます。話し声が聞き取れない場合は、録音そのものに声が入っていないか、音量が足りていません。');
-      return { ok: false, error: `${i + 1}個目で失敗：${err.message}`, partial: i };
-    }
-  }
-  return { ok: true, seconds, chunks: chunks.length };
-}
-
-$('#audio-file').addEventListener('change', async (e) => {
-  // 録音が分割されている場合に備え、複数まとめて受ける。
-  // 順番が狂うと会話が入れ替わるので、ファイル名を自然順（part2 < part10）に並べる。
-  const files = [...(e.target.files || [])].sort((a, b) =>
-    a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }),
-  );
-  e.target.value = '';
-  if (!files.length || !current.caseId) return;
-  const el = $('#capture-status');
-
-  if (!canExtract()) {
-    status(el, 'このブラウザでは動画から音声を取り出せません。tools/extract-audio.sh で変換してから読み込んでください', 'error');
-    return;
-  }
-
-  $('#extract-report').innerHTML = '';
-  if (files.length > 1) {
-    status(el, `${files.length}ファイルを順に取り込みます：${files.map((f) => f.name).join(' → ')}`);
-  }
-
-  const done = [];
-  const failed = [];
-  for (const [i, file] of files.entries()) {
-    const prefix = files.length > 1 ? `${i + 1}/${files.length} ` : '';
-    const res = await importOneFile(file, el, prefix);
-    (res.ok ? done : failed).push({ file, res });
-    // 分割録音は順番に意味があるため、途中で失敗したら止めて知らせる
-    if (!res.ok) break;
-  }
-
-  if (failed.length) {
-    const f = failed[0];
-    status(el, `${f.file.name} で中断しました：${f.res.error}（${done.length}ファイル分は保存済み）`, 'error');
-    return;
-  }
-  const total = done.reduce((n, d) => n + d.res.seconds, 0);
-  status(
-    el,
-    `完了：${done.length}ファイル・合計${fmtDuration(total)}を書き起こしました`,
-    'ok',
-  );
-});
-
 $('#format-btn').addEventListener('click', async (e) => {
   const el = $('#capture-status');
   if (!$('#case-transcript').value.trim()) {
@@ -708,34 +593,7 @@ $('#mode-dialog').addEventListener('close', async () => {
   }
 });
 
-/* ---------------------------- 取り込みの調整 ------------------------------ */
-
-// 音声の取り出しは制作側の作業なので、調整値もこの画面に置く
-for (const [key, sel] of Object.entries({ hpCutoff: '#hp-cutoff', maxGain: '#max-gain', silenceFactor: '#silence-factor' })) {
-  const input = $(sel);
-  if (!input) continue;
-  input.value = settings.get(key) ?? DEFAULTS[key];
-  input.addEventListener('input', () => settings.set(key, Number(input.value) || DEFAULTS[key]));
-}
-const trimBox = $('#trim-enabled');
-if (trimBox) {
-  trimBox.checked = settings.get('trim') !== false;
-  trimBox.addEventListener('change', () => settings.set('trim', trimBox.checked));
-}
-const vocabBox = $('#vocabulary');
-if (vocabBox) {
-  vocabBox.value = settings.get('vocabulary') || '';
-  vocabBox.addEventListener('input', () => settings.set('vocabulary', vocabBox.value));
-}
-
-const extractOptions = () => ({
-  hpCutoff: Number(settings.get('hpCutoff')) || DEFAULTS.hpCutoff,
-  maxGain: Number(settings.get('maxGain')) || DEFAULTS.maxGain,
-  silenceFactor: Number(settings.get('silenceFactor')) || DEFAULTS.silenceFactor,
-  trim: settings.get('trim') !== false,
-});
-
-/* --------------------------- モードの客タイプ ----------------------------- */
+/* --------------------------- モードの客タイプ/* --------------------------- モードの客タイプ ----------------------------- */
 
 async function refreshModes() {
   const data = await api.listModes().catch(() => null);
@@ -782,23 +640,23 @@ $('#mode-customer')?.addEventListener('change', renderTypeDetail);
 /* ---------------------- ロープレモードの管理 ----------------------------- */
 
 // 作ったモードを消す口がどこにも無かった。作りっぱなしだと一覧が溜まる一方になる。
+// 判断基準で絞らず全部出す。消したいモードがどの基準の下にあるか覚えていないため
 function renderAdminModes() {
   const box = $('#admin-mode-list');
   if (!box) return;
-  const mine = modes.filter((m) => !current.criteriaId || m.criteria_id === current.criteriaId);
-  box.innerHTML = mine.length
-    ? mine
+  box.innerHTML = modes.length
+    ? modes
         .map(
           (m) => `<li class="item">
             <div>
               <strong>${esc(m.name)}</strong>
-              <span class="item-meta">${esc(typeLabel(m.customer_type))}・実施${esc(m.run_count ?? 0)}回${m.attached_count ? `・持ち込み${esc(m.attached_count)}点` : ''}</span>
+              <span class="item-meta">${esc(typeLabel(m.customer_type))}・${esc(m.criteria_title || '基準不明')}・実施${esc(m.run_count ?? 0)}回${m.attached_count ? `・持ち込み${esc(m.attached_count)}点` : ''}</span>
             </div>
             <button class="btn btn-ghost btn-sm danger" data-mode-del="${esc(m.id)}">削除</button>
           </li>`,
         )
         .join('')
-    : '<li class="item"><span class="hint">この判断基準から作ったモードはまだありません。</span></li>';
+    : '<li class="item"><span class="hint">まだモードがありません。</span></li>';
 }
 
 const typeLabel = (id) => (config.customerTypes || []).find((t) => t.id === id)?.label || id || '';

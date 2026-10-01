@@ -555,14 +555,9 @@ const routes = [
     'POST',
     '/api/cases',
     async ({ env, auth, body }) => {
-      const transcribed = await transcribeIfAudio(env, auth.client, body);
-      const transcript = [body.transcript, transcribed].filter(Boolean).join('\n').trim();
+      const transcript = String(body.transcript || '').trim();
       return {
-        case: await db.createCase(env, auth.client, {
-          ...body,
-          transcript,
-          source: transcribed ? 'audio' : 'text',
-        }),
+        case: await db.createCase(env, auth.client, { ...body, transcript, source: 'text' }),
       };
     },
   ],
@@ -582,23 +577,6 @@ const routes = [
       requireAdmin(auth); // 回答ごと消えるため
       await db.deleteCase(env, auth.client, params.id);
       return { ok: true };
-    },
-  ],
-
-  // 音声を追記で書き起こす（既存の書き起こしの後ろに足す）
-  [
-    'POST',
-    '/api/cases/:id/transcribe',
-    async ({ env, auth, params, body }) => {
-      if (!body.__audio) throw new ApiError(400, '音声ファイルが必要です');
-      const text = await transcribeIfAudio(env, auth.client, body);
-      if (!text) {
-        // Whisperの誤出力を除いた結果、何も残らなかった＝話し声が入っていない
-        throw new ApiError(422, 'この音声からは話し声を検出できませんでした。録音の音量や内容を確認してください');
-      }
-      const current = await db.getCase(env, auth.client, params.id);
-      const transcript = [current.transcript, text].filter(Boolean).join('\n');
-      return { case: await db.updateCase(env, auth.client, params.id, { transcript }), added: text };
     },
   ],
 
@@ -805,10 +783,17 @@ const routes = [
     'GET',
     '/api/products',
     async ({ env, auth }) => {
-      // 相場表そのもの。受講者に見せると、会話から品物が分かった時点で正解を逆算できてしまう
-      requireRole(auth, 'trainer');
       const products = await db.listProducts(env, auth.client);
-      return { products, categories: [...new Set(products.map((p) => p.category).filter(Boolean))] };
+      const categories = [...new Set(products.map((p) => p.category).filter(Boolean))];
+      // 受講者も開始前に品物を選べるが、相場は渡さない。
+      // 現場でも品物は目の前にあり、分からないのは「いくらで買うか」のほう
+      if (!hasRole(auth, 'trainer')) {
+        return {
+          products: products.map(({ id, category, brand, model, name }) => ({ id, category, brand, model, name })),
+          categories,
+        };
+      }
+      return { products, categories };
     },
   ],
 
@@ -995,17 +980,31 @@ const routes = [
     async ({ env, auth, body }) => {
       const mode = await db.getMode(env, auth.client, requireString(body.modeId, 'modeId', 100));
 
+      // 開始前にシチュエーションを変えられる。変えた内容はその回だけに効く。
+      // 採点も変えた後の客タイプで行うので、モードではなく回のほうに持たせる
+      const customerType = CUSTOMER_TYPES.some((t) => t.id === body.customerType) ? body.customerType : null;
+      const scenario = body.scenario === undefined ? null : String(body.scenario).slice(0, 2000);
+      const picked = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
+      const effective = {
+        ...mode,
+        customer_type: customerType || mode.customer_type,
+        scenario: scenario === null ? mode.scenario : scenario,
+      };
+
       // 品物はここで引き、状態と正解額まで固めて run に保存する。
       // 会話の途中で作ると毎ターン変わってしまうため、開始時に一度だけ決める。
       //
       // シナリオに品物が付いていればそれを全部（「バッグと財布」のような持ち込み）。
       // 付いていなければカテゴリから1点を引く。マスタが空なら品物なしで動かす。
       let items = [];
-      const attached = await db.listModeProducts(env, mode.id);
+      // 開始前に選び直していればそれを、無ければシナリオに付いているものを
+      const attached = picked.length
+        ? (await db.listProducts(env, auth.client)).filter((p) => picked.includes(p.id))
+        : await db.listModeProducts(env, mode.id);
       if (attached.length) {
         items = drawItems(attached);
       } else if (await db.countProducts(env, auth.client)) {
-        items = drawItems([await db.drawProduct(env, auth.client, { category: mode.product_category })]);
+        items = drawItems([await db.drawProduct(env, auth.client, { category: body.category || mode.product_category })]);
       }
 
       const runId = await db.createRun(env, auth.company, {
@@ -1016,15 +1015,17 @@ const routes = [
         staffId: auth.staffId,
         store: auth.store,
         items,
+        customerType,
+        scenario,
       });
       const { dialect } = await db.getGlossary(env, auth.client);
-      const turn = await speakAsCustomer(env, mode, [], { opening: true, dialect, items });
+      const turn = await speakAsCustomer(env, effective, [], { opening: true, dialect, items });
       const history = [{ role: 'customer', text: turn.replyText, mood: turn.mood, flags: turn.flags }];
       await db.saveRun(env, auth.company, runId, { history });
       // item も flags も返さない。正解が見えたら訓練にならない。
       // 表情（mood）だけは返す。対面なら見えているものなので、音声だけの都合で奪わない
       return {
-        runId, mode: modeSummary(mode), history: visibleHistory(history),
+        runId, mode: modeSummary(effective), history: visibleHistory(history),
         itemCount: items.length, replyText: turn.replyText, audioUrl: turn.audioUrl,
         mood: turn.mood, face: turn.face,
       };
@@ -1037,7 +1038,10 @@ const routes = [
     '/api/runs/:id/turn',
     async ({ env, auth, params, body }) => {
       const run = await findRun(env, auth, params.id);
-      const mode = await db.getMode(env, auth.client, run.mode_id);
+      const stored = await db.getMode(env, auth.client, run.mode_id);
+      // 開始前に変えたシチュエーションは、最後まで効かせる
+      const mode = { ...stored, customer_type: run.customer_type || stored.customer_type,
+                     scenario: run.scenario ?? stored.scenario };
 
       let text = typeof body.text === 'string' ? body.text.trim() : '';
       if (!text) text = await transcribeIfAudio(env, auth.client, body);
@@ -1074,12 +1078,12 @@ const routes = [
       const req = scoringRequest({
         history: run.history,
         criteria: criteria.markdown,
-        customerType: mode?.customer_type,
+        customerType: run.customer_type || mode?.customer_type,
         items: run.items,
         flagsMet: state.everMet,
       });
       const raw = await generateStructured(env, { ...req, model: MODELS.analysis, maxTokens: 4000, effort: EFFORT.scoring, label: 'score' });
-      const score = withFlagLabels(computeTotal(raw, run.items), mode?.customer_type);
+      const score = withFlagLabels(computeTotal(raw, run.items), run.customer_type || mode?.customer_type);
       await db.saveRun(env, auth.company, params.id, { score });
       // 採点が済んだので、ここで初めて品物・正解額・条件の到達状況を返す
       return { score, items: run.items };

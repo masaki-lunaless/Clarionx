@@ -196,3 +196,8 @@ CREATE TABLE IF NOT EXISTS mode_products (
 CREATE INDEX IF NOT EXISTS idx_mode_products ON mode_products (mode_id, seq);
 
 ALTER TABLE runs ADD COLUMN items TEXT;
+
+-- 開始前にシチュエーションを変えられるようにする（後から追加）。
+-- モードの既定をその回かぎり上書きする。採点も上書き後の客タイプで行う。
+ALTER TABLE runs ADD COLUMN customer_type TEXT;
+ALTER TABLE runs ADD COLUMN scenario TEXT;

@@ -52,7 +52,7 @@
       <div class="content">
         <div class="empty" id="case-empty">
           <p><strong>実際にあった接客を1件ずつ登録する場所です。</strong></p>
-          <p>接客の書き起こしを貼るか、動画ファイルを読み込むと、AIが「なぜそう言ったのか」を聞く質問を作ります。<br>
+          <p>接客の書き起こしを貼ると、AIが「なぜそう言ったのか」を聞く質問を作ります。<br>
              その回答が、「基準をつくる」でエースの判断基準になります。</p>
           <button class="btn btn-primary" id="new-case-empty">＋ 最初の案件を作る</button>
           <p class="status" id="capture-empty-status"></p>
@@ -71,14 +71,12 @@
 
           <details class="block" open>
             <summary>書き起こし</summary>
-            <textarea class="input textarea-lg" id="case-transcript" placeholder="接客の書き起こしを貼り付け"></textarea>
-            <div class="row">
-              <label class="btn btn-ghost btn-sm file-btn">
-                動画・音声ファイルを読み込む（複数可）
-                <input type="file" id="audio-file" accept="audio/*,video/*" multiple hidden>
-              </label>
-              <span class="hint">MP4などの動画をそのまま読み込めます。<strong>分割された録音は複数まとめて選べます</strong>（ファイル名順に処理して1つの書き起こしにまとめます）。ブラウザ内で音声だけを取り出し、無音を詰めて10分ずつに分けて書き起こします。<strong>音声は書き起こし後に破棄され、保存されません。</strong>数十時間をまとめて処理する場合は <code>tools/extract-audio.sh</code> を使ってください。</span>
-            </div>
+            <textarea class="input textarea-lg" id="case-transcript" placeholder="接客の書き起こしを貼り付け。「店員：」「客：」が付いていなくても、下の「話者を分けて整える」で付きます。"></textarea>
+            <p class="hint">
+              <strong>書き起こしはここに貼ってください。</strong>録音からの文字起こしは、この画面では行いません。
+              使い慣れた文字起こしツールの結果をそのまま貼るか、覚えている範囲で書き起こしたものでも構いません。
+              会話の形になっていれば、質問は作れます。
+            </p>
           </details>
 
           <div class="row row-actions">
@@ -89,7 +87,6 @@
           </div>
           <p class="hint">書き起こしに「店員：」「客：」が付いていないと、転換点の検出精度が落ちます。先に整えてください。</p>
 
-          <div id="extract-report"></div>
           <div id="assessment"></div>
           <div id="turning-points"></div>
         </div>
@@ -129,8 +126,8 @@
           <button class="btn btn-sm" id="create-mode-from">この判断基準からロープレモードを作る</button>
         </div>
 
-        <details class="block" id="mode-manage">
-          <summary>この判断基準で作ったロープレモード</summary>
+        <details class="block" id="mode-manage" open>
+          <summary>ロープレモードの管理（すべて）</summary>
           <ul class="list" id="admin-mode-list"></ul>
           <p class="hint">削除すると受講者の一覧から消えます。<strong>実施済みの記録は残ります。</strong></p>
         </details>
@@ -325,27 +322,6 @@
       </div>
 
 
-      <hr>
-      <h2>取り込みの調整</h2>
-      <p class="hint">音声ファイルを読み込むときの処理です。既定のままで大半は動きます。素材に合わない場合だけ触ってください。</p>
-      <div class="fb-grid">
-        <label class="label">ハイパス カットオフ（Hz）
-          <input class="input" id="hp-cutoff" type="number" min="0" max="1000" step="10">
-        </label>
-        <label class="label">増幅の上限（倍）
-          <input class="input" id="max-gain" type="number" min="1" max="200" step="1">
-        </label>
-        <label class="label">無音判定の強さ（暗騒音の何倍を声とみなすか）
-          <input class="input" id="silence-factor" type="number" min="1" max="20" step="0.5">
-        </label>
-      </div>
-      <label class="check">
-        <input type="checkbox" id="trim-enabled" checked>
-        <span>無音を詰める（切ると、元の長さのまま送ります）</span>
-      </label>
-      <label class="label">固有名詞ヒント（書き起こし精度の向上・任意）
-        <input class="input" id="vocabulary" placeholder="店舗名、ブランド名、商品名をカンマ区切りで">
-      </label>
 
       <hr>
       <details class="block">

@@ -305,12 +305,14 @@ export async function createRun(env, client, data) {
   const t = now();
   await db(env)
     .prepare(
-      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, items, staff_id, store, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
+      `INSERT INTO runs (id, client, mode_id, criteria_id, trainee, history, items, staff_id, store,
+                         customer_type, scenario, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, client, data.modeId || null, data.criteriaId || null, data.trainee || '',
-      data.items?.length ? JSON.stringify(data.items) : null, data.staffId || '', data.store || '', t, t,
+      data.items?.length ? JSON.stringify(data.items) : null, data.staffId || '', data.store || '',
+      data.customerType || null, data.scenario || null, t, t,
     )
     .run();
   return id;
@@ -353,7 +355,9 @@ export async function saveFeedback(env, client, id, { realism, scoring, note }) 
  * staffId を渡すとさらにその人の分だけになる（受講者向け）。
  */
 export async function listRuns(env, client, { criteriaId, staffId, limit = 100 } = {}) {
-  const cols = `r.*, m.name AS mode_name, m.customer_type, cr.title AS criteria_title`;
+  // その回で上書きされていればそちらを使う（開始前にシチュエーションを変えられるため）
+  const cols = `r.*, m.name AS mode_name, COALESCE(r.customer_type, m.customer_type) AS customer_type,
+                cr.title AS criteria_title`;
   const joins = `FROM runs r LEFT JOIN modes m ON m.id = r.mode_id LEFT JOIN criteria cr ON cr.id = r.criteria_id`;
   const where = ['r.client = ?'];
   const values = [client];

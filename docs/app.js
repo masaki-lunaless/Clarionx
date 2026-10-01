@@ -173,7 +173,74 @@ $('#mode-list').addEventListener('click', (e) => {
   $('#convo').innerHTML = '';
   $('#score-result').innerHTML = '';
   $('#feedback-box').hidden = true;
+  resetSituation(mode);
   setPractice(false);
+});
+
+/* ------------------------- シチュエーションの差し替え --------------------- */
+
+// 開始前にその回だけ設定を変える。モードそのものには触らない。
+// 品物は受講者にも選ばせるが、相場はWorker側で落として返している
+// （現場でも品物は目の前にあり、分からないのは「いくらで買うか」のほう）。
+let situationProducts = [];
+let pickedForRun = new Set();
+
+function resetSituation(mode) {
+  pickedForRun = new Set();
+  const typeSel = $('#run-customer');
+  if (typeSel) {
+    typeSel.innerHTML = (config.customerTypes || [])
+      .map((t) => `<option value="${esc(t.id)}" ${t.id === mode.customer_type ? 'selected' : ''}>${esc(t.label)}</option>`)
+      .join('');
+  }
+  const scen = $('#run-scenario');
+  if (scen) scen.value = mode.scenario || '';
+  const cat = $('#run-category');
+  if (cat) cat.value = mode.product_category || '';
+  renderRunProducts();
+  $('#situation').open = false;
+}
+
+async function loadSituationProducts() {
+  const data = await api.listProducts().catch(() => null);
+  situationProducts = data?.products || [];
+  const cat = $('#run-category');
+  if (cat) {
+    const keep = cat.value;
+    cat.innerHTML = ['<option value="">すべてのカテゴリ</option>',
+      ...(data?.categories || []).map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+    cat.value = keep;
+  }
+  renderRunProducts();
+}
+
+function renderRunProducts() {
+  const box = $('#run-products');
+  if (!box) return;
+  const cat = $('#run-category')?.value || '';
+  const pool = cat ? situationProducts.filter((p) => p.category === cat) : situationProducts;
+  box.innerHTML = pool.length
+    ? pool
+        .map(
+          (p) => `<label class="check">
+            <input type="checkbox" value="${esc(p.id)}" ${pickedForRun.has(p.id) ? 'checked' : ''}>
+            <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}</span>
+          </label>`,
+        )
+        .join('')
+    : '<p class="hint">このカテゴリに品物がありません。</p>';
+}
+
+$('#run-category')?.addEventListener('change', renderRunProducts);
+$('#run-products')?.addEventListener('change', (e) => {
+  const cb = e.target.closest('input[type=checkbox]');
+  if (!cb) return;
+  if (cb.checked) pickedForRun.add(cb.value);
+  else pickedForRun.delete(cb.value);
+});
+$('#situation-reset')?.addEventListener('click', () => {
+  const mode = modes.find((m) => m.id === current.modeId);
+  if (mode) resetSituation(mode);
 });
 
 function setPractice(on) {
@@ -189,7 +256,12 @@ $('#start-run').addEventListener('click', async (e) => {
   $('#score-result').innerHTML = '';
   $('#feedback-box').hidden = true;
   const out = await run(e.target, $('#practice-status'), 'お客様が来店中…', () =>
-    api.startRun(current.modeId, settings.get('trainee')),
+    api.startRun(current.modeId, settings.get('trainee'), {
+      customerType: $('#run-customer')?.value || undefined,
+      scenario: $('#run-scenario')?.value,
+      category: $('#run-category')?.value || undefined,
+      productIds: [...pickedForRun],
+    }),
   );
   if (!out) return;
   current.run = out.runId;
@@ -625,7 +697,7 @@ function setRecordingUI(on) {
 /* -------------------------------- 初期化 -------------------------------- */
 
 async function refreshAll() {
-  await Promise.all([refreshCriteria(), refreshModes()]);
+  await Promise.all([refreshCriteria(), refreshModes(), loadSituationProducts()]);
   renderModeList();
 }
 
