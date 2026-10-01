@@ -490,6 +490,27 @@ const tight = priceFor(rows.product, CONDITIONS[1], ACCESSORIES[1], 0.12);
 check('難易度: やさしいほど査定額の幅が広い', wide.high - wide.low > tight.high - tight.low);
 check('難易度: 中心は変わらない', wide.fair === tight.fair);
 
+/* --------- 商品マスタは全社共通 --------- */
+
+// 会社ごとに100点ずつ入れ直すのは、導入のたびに効いてくる手間になる。
+// ナレッジ空間が違っても同じマスタを見る。
+sqlLog = [];
+await call('/api/products');
+const productSql = sqlLog.filter((q) => q.includes('FROM products'));
+check('商品: ナレッジ空間ではなく共通キーで引く',
+  productSql.length > 0 && !sqlLog.some((q) => q.includes("FROM products") && q.includes('clientA')),
+  productSql.join(' | ').slice(0, 120));
+// 別のナレッジ空間で入っても、見える商品は同じ
+auth.session = {
+  token_hash: 'x', company: 'other', staff_id: 'staff-9', staff_code: '9', staff_name: '別会社',
+  role: 'admin', store: '', staff_active: 1, company_active: 1, company_name: 'B社', knowledge_space: 'another-space',
+};
+const otherProducts = await (
+  await worker.fetch(new Request('https://w.dev/api/products', { headers: { ...H, 'x-clarion-token': 'a'.repeat(64) } }), env)
+).json();
+check('商品: 別のナレッジ空間でも同じマスタが見える', otherProducts.products.length === 1, otherProducts.products.length);
+auth.session = null;
+
 /* --------- 開始前にシチュエーションを変える --------- */
 
 // モードの既定を、その回だけ差し替える。モードそのものは変えない。

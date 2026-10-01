@@ -202,3 +202,4 @@ ALTER TABLE runs ADD COLUMN items TEXT;
 ALTER TABLE runs ADD COLUMN customer_type TEXT;
 ALTER TABLE runs ADD COLUMN scenario TEXT;
 ALTER TABLE runs ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'normal';
+-- 商品マスタは client = '*' の1本に統一する（会社・ナレッジ空間をまたいで共通）

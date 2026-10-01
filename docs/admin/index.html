@@ -19,7 +19,6 @@
     <button class="tab" data-tab="glossary" role="tab" data-requires="masters">ブランド・用語</button>
     <button class="tab" data-tab="staff" role="tab" data-requires="masters">スタッフ</button>
     <button class="tab" data-tab="companies" role="tab" data-requires="masters">会社</button>
-    <button class="tab" data-tab="account" role="tab">接続</button>
   </nav>
   <div class="who" id="who" hidden>
     <span id="who-name"></span>
@@ -28,14 +27,12 @@
   </div>
 </header>
 
-<div class="banner" id="connect-banner" hidden>
-  <span id="connect-message">まだサーバーに接続していません。「接続」を開いてログインしてください。</span>
-  <button class="btn btn-sm" id="go-account">接続を開く</button>
-</div>
-
 <div class="banner" id="denied-banner" hidden>
   <span>この画面は指導者以上が使えます。権限のある個人コードでログインし直してください。</span>
+  <a class="btn btn-sm" href="../">練習画面へ</a>
 </div>
+
+<p class="status" id="settings-status" hidden></p>
 
 <main>
 <!-- ① 蓄積 -->
@@ -297,46 +294,6 @@
     </div>
   </section>
 
-  <!-- 接続 -->
-  <section class="panel" id="panel-account">
-    <div class="content narrow">
-      <h2>接続</h2>
-      <p class="hint">練習画面と同じ設定を使います。片方でログインすれば、もう片方も入れます。</p>
-      <label class="label">Worker URL
-        <input class="input" id="worker-url" placeholder="https://clarion-proxy.xxxx.workers.dev">
-      </label>
-      <div class="fb-grid">
-        <label class="label">会社コード
-          <input class="input" id="login-company" autocomplete="organization" placeholder="例：clarisse">
-        </label>
-        <label class="label">個人コード
-          <input class="input" id="login-staff" autocomplete="username" placeholder="例：1001">
-        </label>
-      </div>
-      <label class="label">パスワード
-        <input class="input" id="login-password" type="password" autocomplete="current-password">
-      </label>
-      <div class="row row-actions">
-        <button class="btn btn-primary" id="login-btn">ログイン</button>
-        <span class="status" id="login-status"></span>
-      </div>
-
-
-
-      <hr>
-      <details class="block">
-        <summary>共有トークンで入る（従来の方法）</summary>
-        <p class="hint">会社をまだ1つも作っていない段階では、こちらで入って会社とスタッフを登録します。この入口の管理者だけは、どの会社のスタッフも操作できます。</p>
-        <label class="label">アクセストークン
-          <input class="input" id="access-token" type="password">
-        </label>
-        <div class="row row-actions">
-          <button class="btn" id="test-connection">接続テスト</button>
-          <span class="status" id="settings-status"></span>
-        </div>
-      </details>
-    </div>
-  </section>
 </main>
 
 <dialog id="mode-dialog">

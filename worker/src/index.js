@@ -116,6 +116,13 @@ export function visibleItems(run) {
   return list;
 }
 
+/**
+ * 商品マスタだけは会社・ナレッジ空間をまたいで1つにする。
+ * 相場は店ごとに違うものではないし、会社ごとに100点ずつ入れ直すのは
+ * 導入のたびに効いてくる手間になる。編集できるのは管理者のまま。
+ */
+const PRODUCTS = '*';
+
 /* -------------------------------- 共通処理 -------------------------------- */
 
 function corsHeaders(request, env) {
@@ -401,7 +408,7 @@ const routes = [
       feedbackOptions: FEEDBACK_OPTIONS,
       conditions: CONDITIONS.map(({ id, label, desc }) => ({ id, label, desc })),
       accessories: ACCESSORIES.map(({ id, label }) => ({ id, label })),
-      productCount: await db.countProducts(env, auth.client),
+      productCount: await db.countProducts(env, PRODUCTS),
       me: meSummary(auth),
       roles: ROLE_LIST,
     }),
@@ -786,7 +793,7 @@ const routes = [
     'GET',
     '/api/products',
     async ({ env, auth }) => {
-      const products = await db.listProducts(env, auth.client);
+      const products = await db.listProducts(env, PRODUCTS);
       const categories = [...new Set(products.map((p) => p.category).filter(Boolean))];
       // 受講者も開始前に品物を選べるが、相場は渡さない。
       // 現場でも品物は目の前にあり、分からないのは「いくらで買うか」のほう
@@ -807,7 +814,7 @@ const routes = [
     '/api/products/:id/quote',
     async ({ env, auth, params, url }) => {
       requireRole(auth, 'trainer');
-      const product = await db.getProduct(env, auth.client, params.id);
+      const product = await db.getProduct(env, PRODUCTS, params.id);
       const condition = CONDITIONS.find((c) => c.id === url.searchParams.get('condition')) || CONDITIONS[1];
       const accessory = ACCESSORIES.find((a) => a.id === url.searchParams.get('accessory')) || ACCESSORIES[1];
       return {
@@ -829,7 +836,7 @@ const routes = [
       const newPrice = Math.round(Number(body.newPrice)) || 0;
       if (newPrice <= 0) throw new ApiError(400, '新品価格を入れてください');
       return {
-        product: await db.createProduct(env, auth.client, {
+        product: await db.createProduct(env, PRODUCTS, {
           category: String(body.category || '').slice(0, 60),
           brand: String(body.brand || '').slice(0, 100),
           model: String(body.model || '').slice(0, 100),
@@ -856,7 +863,7 @@ const routes = [
         fields.retention = Math.min(500, Math.max(1, Math.round(Number(body.retention)) || 30));
       }
       if (body.active !== undefined) fields.active = Boolean(body.active);
-      return { product: await db.updateProduct(env, auth.client, params.id, fields) };
+      return { product: await db.updateProduct(env, PRODUCTS, params.id, fields) };
     },
   ],
 
@@ -865,7 +872,7 @@ const routes = [
     '/api/products/:id',
     async ({ env, auth, params }) => {
       requireAdmin(auth);
-      await db.deleteProduct(env, auth.client, params.id);
+      await db.deleteProduct(env, PRODUCTS, params.id);
       return { ok: true };
     },
   ],
@@ -884,7 +891,7 @@ const routes = [
           bad.slice(0, 3),
         );
       }
-      return { ...(await db.addProducts(env, auth.client, rows)), bad: bad.slice(0, 20) };
+      return { ...(await db.addProducts(env, PRODUCTS, rows)), bad: bad.slice(0, 20) };
     },
   ],
 
@@ -897,7 +904,7 @@ const routes = [
       const rows = SEED_PRODUCTS.map(([category, brand, model, name, newPrice, retention, notes]) => ({
         category, brand, model, name, newPrice, retention, notes,
       }));
-      return db.addProducts(env, auth.client, rows);
+      return db.addProducts(env, PRODUCTS, rows);
     },
   ],
 
@@ -927,7 +934,7 @@ const routes = [
       });
       // 持ち込む品物。複数点を付けられる（バッグと財布、など）
       const ids = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
-      if (ids.length) await db.setModeProducts(env, auth.client, mode.id, ids);
+      if (ids.length) await db.setModeProducts(env, PRODUCTS, mode.id, ids);
       return { mode: modeSummary(mode, { admin: auth.admin }), products: await db.listModeProducts(env, mode.id) };
     },
   ],
@@ -951,7 +958,7 @@ const routes = [
       requireAdmin(auth);
       await db.getMode(env, auth.client, params.id);
       const ids = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
-      return { products: await db.setModeProducts(env, auth.client, params.id, ids) };
+      return { products: await db.setModeProducts(env, PRODUCTS, params.id, ids) };
     },
   ],
 
@@ -1004,13 +1011,13 @@ const routes = [
       let items = [];
       // 開始前に選び直していればそれを、無ければシナリオに付いているものを
       const attached = picked.length
-        ? (await db.listProducts(env, auth.client)).filter((p) => picked.includes(p.id))
+        ? (await db.listProducts(env, PRODUCTS)).filter((p) => picked.includes(p.id))
         : await db.listModeProducts(env, mode.id);
       if (attached.length) {
         items = drawItems(attached, difficultyOf(difficulty).tolerance);
-      } else if (await db.countProducts(env, auth.client)) {
+      } else if (await db.countProducts(env, PRODUCTS)) {
         items = drawItems(
-          [await db.drawProduct(env, auth.client, { category: body.category || mode.product_category })],
+          [await db.drawProduct(env, PRODUCTS, { category: body.category || mode.product_category })],
           difficultyOf(difficulty).tolerance,
         );
       }

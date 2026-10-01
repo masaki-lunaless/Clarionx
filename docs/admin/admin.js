@@ -33,25 +33,17 @@ async function activateTab(name) {
   if (name === 'merge') await refreshMerge();
 }
 $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
-$('#go-account').addEventListener('click', () => activateTab('account'));
 
-function setConnected(ok, message) {
-  $('#connect-banner').hidden = ok;
-  if (!ok && message) $('#connect-message').textContent = message;
-}
+/* ------------------------------- 入口 ------------------------------------ */
 
-/* --------------------------------- 接続 ---------------------------------- */
+// ログイン画面は練習画面の1枚だけ。ここは入っている前提で、
+// 入っていなければそちらへ送る。入口を2つ持つと、どちらで入るのかを
+// 説明しなければならなくなる。
+const toLogin = () => location.replace('../');
 
-for (const [key, sel] of Object.entries({ workerUrl: '#worker-url', token: '#access-token' })) {
-  const input = $(sel);
-  input.value = settings.get(key) || '';
-  input.addEventListener('input', () => settings.set(key, input.value));
-}
-
-async function afterConnect(cfg, el) {
+async function afterConnect(cfg) {
   config = { ...config, ...cfg };
   me = cfg.me;
-  setConnected(true);
 
   // 指導者以上でないとこの画面に用がない。何も読まずに理由だけ出す
   const denied = !me?.can?.capture;
@@ -62,7 +54,6 @@ async function afterConnect(cfg, el) {
     ? `${me.company_name}／${me.staff_name}（${roleLabel}）`
     : `${me.company_name}（共有トークン）`;
   if (denied) {
-    status(el, `${roleLabel}では制作画面を使えません`, 'error');
     for (const t of $$('.tab[data-requires]')) t.hidden = true;
     return;
   }
@@ -70,7 +61,6 @@ async function afterConnect(cfg, el) {
   // 権限で触れないタブは出さない。実際の制限はWorker側でかけている
   for (const t of $$('[data-requires]')) t.hidden = !me.can[t.dataset.requires];
 
-  status(el, `接続OK — ${me.company_name} / ナレッジ空間 ${me.knowledge_space}`, 'ok');
   fillSelect($('#staff-role'), (config.roles || []).map((r) => ({ value: r.id, label: r.label })));
   fillSelect($('#calc-condition'), (config.conditions || []).map((c) => ({ value: c.id, label: `${c.label}（${c.desc}）` })));
   fillSelect($('#calc-accessory'), (config.accessories || []).map((a) => ({ value: a.id, label: a.label })));
@@ -89,44 +79,24 @@ async function afterConnect(cfg, el) {
   if (first) await activateTab(first.dataset.tab);
 }
 
+$('#logout').addEventListener('click', async () => {
+  await api.logout().catch(() => {});
+  settings.set('token', '');
+  toLogin();
+});
+
+// セッション切れも入口へ戻す
+window.addEventListener('clarion:unauthorized', () => {
+  settings.set('token', '');
+  toLogin();
+});
+
 const fillSelect = (el, options, selected) => {
   if (!el) return;
   el.innerHTML = options
     .map((o) => `<option value="${esc(o.value)}" ${o.value === selected ? 'selected' : ''}>${esc(o.label)}</option>`)
     .join('');
 };
-
-$('#login-btn').addEventListener('click', async (e) => {
-  const el = $('#login-status');
-  const out = await run(e.target, el, 'ログイン中…', () =>
-    api.login({
-      company: $('#login-company').value,
-      password: $('#login-password').value,
-      staffCode: $('#login-staff').value,
-    }),
-  );
-  if (!out) return;
-  settings.set('token', out.token);
-  settings.set('trainee', out.staff.name);
-  $('#login-password').value = '';
-  const cfg = await api.config().catch(() => null);
-  if (cfg) await afterConnect(cfg, el);
-});
-
-$('#test-connection').addEventListener('click', async (e) => {
-  const el = $('#settings-status');
-  const cfg = await run(e.target, el, '接続中…', () => api.config());
-  if (cfg) await afterConnect(cfg, el);
-});
-
-$('#logout').addEventListener('click', async () => {
-  await api.logout().catch(() => {});
-  settings.set('token', '');
-  me = null;
-  $('#who').hidden = true;
-  setConnected(false, 'ログアウトしました。もう一度ログインしてください。');
-  activateTab('account');
-});
 
 /* -------------------------------- ① 蓄積 -------------------------------- */
 
@@ -996,14 +966,12 @@ $('#save-company').addEventListener('click', async (e) => {
 
 (async function start() {
   if (!settings.get('workerUrl') || !settings.get('token')) {
-    setConnected(false);
-    activateTab('account');
+    toLogin();
     return;
   }
   try {
-    await afterConnect(await api.config(), $('#settings-status'));
-  } catch (err) {
-    setConnected(false, `サーバーに接続できません：${err.message}`);
-    activateTab('account');
+    await afterConnect(await api.config());
+  } catch {
+    toLogin();
   }
 })();
