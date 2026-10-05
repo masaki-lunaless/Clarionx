@@ -123,6 +123,16 @@ export function visibleItems(run) {
  */
 const PRODUCTS = '*';
 
+/**
+ * 画面側と揃えるビルド印。
+ *
+ * GitHub Pages は max-age=600 なので、デプロイ直後の10分は古いJSが動き続ける。
+ * 画面とAPIの形が変わった直後だと、黙って壊れる（item が items になった時など）。
+ * 画面が自分の印とこれを見比べて、違えば再読み込みを促す。
+ * **画面側を直したら、ここと docs の BUILD を同じ値にして出すこと。**
+ */
+const BUILD = '2026-10-05a';
+
 /* -------------------------------- 共通処理 -------------------------------- */
 
 function corsHeaders(request, env) {
@@ -395,6 +405,7 @@ const routes = [
       ],
       moods: MOODS.map(({ id, label, face }) => ({ id, label, face })),
       voices: listVoices(env),
+      build: BUILD,
       stt: Boolean(env.OPENAI_API_KEY),
       tts: activeProvider(env),
       models: MODELS,

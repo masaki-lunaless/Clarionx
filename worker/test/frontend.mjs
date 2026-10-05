@@ -88,5 +88,17 @@ for (const html of ['docs/index.html', 'docs/admin/index.html']) {
   }
 }
 
+/* ---- 版ずれの検知に使う印が、Workerと画面で揃っているか ---- */
+
+// 揃っていないと、配信直後に全員へ「新しい版が出ています」が出続ける。
+// 逆に更新し忘れると、古いJSが黙って動き続ける。
+const buildOf = (rel) => readFileSync(join(root, rel), 'utf8').match(/const BUILD = '([^']+)'/)?.[1];
+const builds = ['worker/src/index.js', 'docs/app.js', 'docs/admin/admin.js'].map((f) => [f, buildOf(f)]);
+check(
+  'BUILD の印がWorkerと画面で揃っている',
+  builds.every(([, v]) => v && v === builds[0][1]),
+  builds.map(([f, v]) => `${f}=${v}`).join(' / '),
+);
+
 console.log(failed ? `\n${failed} 件失敗` : '\n画面側も通過');
 process.exit(failed ? 1 : 0);

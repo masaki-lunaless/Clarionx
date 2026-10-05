@@ -34,6 +34,25 @@ async function activateTab(name) {
 }
 $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
 
+/* ------------------------------ 版ずれの検知 ----------------------------- */
+
+// GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
+// 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
+const BUILD = '2026-10-05a';
+
+function checkBuild(cfg) {
+  if (!cfg?.build || cfg.build === BUILD) return;
+  const bar = document.createElement('div');
+  bar.className = 'banner';
+  bar.innerHTML = '<span>新しい版が出ています。このままだと正しく動かないことがあります。</span>';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm';
+  btn.textContent = '再読み込み';
+  btn.onclick = () => location.reload();
+  bar.appendChild(btn);
+  document.body.prepend(bar);
+}
+
 /* ------------------------------- 入口 ------------------------------------ */
 
 // ログイン画面は練習画面の1枚だけ。ここは入っている前提で、
@@ -42,6 +61,7 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
 const toLogin = () => location.replace('../');
 
 async function afterConnect(cfg) {
+  checkBuild(cfg);
   config = { ...config, ...cfg };
   me = cfg.me;
 

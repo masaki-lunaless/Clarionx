@@ -22,6 +22,25 @@ async function activateTab(name) {
 
 $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
 
+/* ------------------------------ 版ずれの検知 ----------------------------- */
+
+// GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
+// 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
+const BUILD = '2026-10-05a';
+
+function checkBuild(cfg) {
+  if (!cfg?.build || cfg.build === BUILD) return;
+  const bar = document.createElement('div');
+  bar.className = 'banner';
+  bar.innerHTML = '<span>新しい版が出ています。このままだと正しく動かないことがあります。</span>';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm';
+  btn.textContent = '再読み込み';
+  btn.onclick = () => location.reload();
+  bar.appendChild(btn);
+  document.body.prepend(bar);
+}
+
 /* ------------------------------ 入口と権限 ------------------------------- */
 
 // ログインするまではログイン画面だけを出し、入ったらタブを出す。
@@ -80,6 +99,7 @@ for (const [key, sel] of Object.entries({ workerUrl: '#worker-url', token: '#acc
 }
 
 async function afterConnect(cfg) {
+  checkBuild(cfg);
   applyConfig(cfg);
   me = cfg.me;
   applyPermissions();
