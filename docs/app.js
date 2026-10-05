@@ -401,6 +401,33 @@ function renderItems(items, price) {
     </div>`;
 }
 
+/**
+ * 折れる条件の到達状況。
+ * 成約したかの二値だけだと、不成約の回がすべて同じ顔になる。
+ * 「2つまでは立っていた」が見えると、次に何をすればよいかが残る。
+ */
+function renderFlags(score) {
+  const flags = score.flags || [];
+  if (!flags.length) return '';
+  const met = flags.filter((f) => f.met).length;
+  return `
+    <div class="card flags-card">
+      <h4>お客様が折れる条件（${met}／${flags.length} 到達）${score.track === 'reversal' ? '<span class="pill">大逆転</span>' : ''}</h4>
+      ${flags
+        .map(
+          (f) => `<div class="axis">
+            <div class="axis-head">
+              <strong>${esc(f.label)}</strong>
+              <span class="deduction ${f.met ? 'zero' : ''}">${f.met ? '到達' : '未到達'}</span>
+            </div>
+            ${f.evidence ? `<p class="evidence">${esc(f.evidence)}</p>` : ''}
+          </div>`,
+        )
+        .join('')}
+      ${score.breaker ? `<p class="advice">やってはいけないこと：${esc(score.breaker)}</p>` : ''}
+    </div>`;
+}
+
 function renderScore(s, items) {
   const b = s.breakdown || {};
   $('#score-result').innerHTML = `

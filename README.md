@@ -261,7 +261,15 @@ npx wrangler deploy
 音声合成の選び方は次節。
 
 ローカル開発は `cp .dev.vars.example .dev.vars` して値を埋め、`npm run dev`。
-外部APIを叩かない疎通テストは `npm test`。
+`npm test` で2本走る。
+
+- `test/smoke.mjs` … D1と外部APIをスタブして、Workerの分岐・権限・採点の計算を見る
+- `test/frontend.mjs` … 画面側の静的チェック。**呼んでいるのに定義が無い関数**、
+  JSが触るのにHTMLに無いid、タグの開閉を見る
+
+後者は、ブロック単位でコードを差し替えるときに間の関数ごと消す事故が3回起きたため
+（`flagBlock` / `meSummary` / `renderFlags`）。どれも構文は通るので `node --check` では
+気づけず、採点ボタンを押した人の画面が白くなって初めて分かった。
 
 ### 2. フロントを公開
 
