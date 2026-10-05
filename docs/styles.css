@@ -521,3 +521,9 @@ li.item .btn { flex: 0 0 auto; width: auto; }
 
 /* ---- 各画面の冒頭一行（何をする画面か） ---- */
 .lede { margin: -4px 0 14px; color: var(--ink-2); font-size: .82rem; }
+
+/* ---- 練習中に手元に出す品物（金額は出さない） ---- */
+.run-items { margin-bottom: 12px; border-left: 3px solid var(--line); }
+.run-items h4 { margin: 0 0 8px; font-size: .8rem; color: var(--ink-2); font-weight: 600; }
+.run-items .axis { padding: 6px 0; }
+.run-items .hint { margin: 8px 0 0; }

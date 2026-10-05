@@ -38,7 +38,7 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
 
 // GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
 // 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
-const BUILD = '2026-10-05a';
+const BUILD = '2026-10-05d';
 
 function checkBuild(cfg) {
   if (!cfg?.build || cfg.build === BUILD) return;

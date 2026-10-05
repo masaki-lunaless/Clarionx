@@ -26,7 +26,7 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
 
 // GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
 // 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
-const BUILD = '2026-10-05a';
+const BUILD = '2026-10-05d';
 
 function checkBuild(cfg) {
   if (!cfg?.build || cfg.build === BUILD) return;
@@ -191,6 +191,7 @@ $('#mode-list').addEventListener('click', (e) => {
   $('#run-mode-name').textContent = mode.name;
   $('#run-mode-detail').textContent = `${config.customerTypes.find((t) => t.id === mode.customer_type)?.label || mode.customer_type}${mode.scenario ? ` ／ ${mode.scenario}` : ''}`;
   $('#convo').innerHTML = '';
+  $('#run-items').innerHTML = '';
   $('#score-result').innerHTML = '';
   $('#feedback-box').hidden = true;
   resetSituation(mode);
@@ -248,6 +249,7 @@ function renderRunProducts() {
   const chosen = situationProducts.filter((p) => pickedForRun.has(p.id));
   const picked = $('#run-picked');
   if (picked) {
+    // 見どころ（備考）は出す。金額は出さない。品物は目の前にあるが、値段は自分で決めるもの
     picked.innerHTML = chosen.length
       ? `<div class="chips">${chosen
           .map(
@@ -255,6 +257,10 @@ function renderRunProducts() {
               <button type="button" class="chip-x" data-unpick="${esc(p.id)}" aria-label="外す">×</button></span>`,
           )
           .join('')}</div>
+         ${chosen
+           .filter((p) => p.notes)
+           .map((p) => `<p class="hint"><strong>${esc(p.name)}</strong>：${esc(p.notes)}</p>`)
+           .join('')}
          <p class="hint">${chosen.length}点をまとめて持ってきます</p>`
       : '';
   }
@@ -317,6 +323,7 @@ $('#start-run').addEventListener('click', async (e) => {
   if (!out) return;
   current.run = out.runId;
   startTiming();
+  renderRunItems(out.items);
   renderConvo(out.history);
   play(out.replyText, out.audioUrl);
   if (!out.audioUrl) markCustomerDone(false);
@@ -331,6 +338,35 @@ const faceOf = (id) => (config.moods || []).find((m) => m.id === id)?.face || ''
  * 声の演技にも同じ心境を載せているが、それだけでは読み取れない人もいる。
  * 「どこまで折れたか」は出さない。そちらは答えそのもの。
  */
+/**
+ * 練習中に手元に出す品物。
+ * 実際のカウンターなら品物は目の前にあるので、状態も付属品も見どころも見えてよい。
+ * 伏せるのは正解額だけで、それは採点まで出さない（Worker側で落として返している）。
+ */
+function renderRunItems(items) {
+  const box = $('#run-items');
+  if (!box) return;
+  const list = items || [];
+  box.innerHTML = list.length
+    ? `<div class="card run-items">
+        <h4>お客様が持ち込んだ品物${list.length > 1 ? `（${list.length}点）` : ''}</h4>
+        ${list
+          .map(
+            (i) => `<div class="axis">
+              <p class="item-name"><strong>${esc([i.brand, i.name].filter(Boolean).join(' '))}</strong>${i.model ? `<span class="item-meta">型番 ${esc(i.model)}</span>` : ''}</p>
+              <div class="breakdown">
+                <span>状態：${esc(i.condition_label)}（${esc(i.condition_desc)}）</span>
+                <span>付属品：${esc(i.accessory_label)}</span>
+              </div>
+              ${i.notes ? `<p class="advice">→ 見どころ：${esc(i.notes)}</p>` : ''}
+            </div>`,
+          )
+          .join('')}
+        <p class="hint">いくらで買い取るかは、あなたが決めます。適正額は採点のあとに出ます。</p>
+      </div>`
+    : '';
+}
+
 function renderConvo(history) {
   $('#convo').innerHTML = history
     .map((m) => {

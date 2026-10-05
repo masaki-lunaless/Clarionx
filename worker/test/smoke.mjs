@@ -566,10 +566,16 @@ check('秘匿: 品物なしなら空', visibleItems({ score: null }).length === 
 check('秘匿: 旧形式の1点記録も読める', visibleItems({ item, score: { total: 1 } })[0]?.brand === 'ロレックス');
 
 const startedWithItem = await (await post('/api/runs', { modeId: 'mode1' })).json();
-check('秘匿: 開始レスポンスに品物を含めない',
-  startedWithItem.items === undefined && startedWithItem.item === undefined,
-  JSON.stringify(Object.keys(startedWithItem)));
-check('秘匿: 何点あるかだけ返す', typeof startedWithItem.itemCount === 'number', startedWithItem.itemCount);
+// 品物そのものは目の前にあるので見えてよい。伏せるのは正解額だけ
+const shown = startedWithItem.items?.[0] || {};
+check('秘匿: 開始時に状態と備考は見せる',
+  Boolean(shown.condition_label && shown.accessory_label && 'notes' in shown), JSON.stringify(shown));
+check('秘匿: 正解額は渡さない',
+  shown.low === undefined && shown.high === undefined && shown.fair === undefined);
+check('秘匿: 新品価格と買取率も渡さない（逆算できるため）',
+  shown.new_price === undefined && shown.retention === undefined);
+check('秘匿: 入手経緯は渡さない（会話で聞き出すもの）', shown.history === undefined);
+check('秘匿: 何点あるかも返す', typeof startedWithItem.itemCount === 'number', startedWithItem.itemCount);
 const modesForItem = await (await call('/api/modes')).json();
 check('秘匿: モードはカテゴリと点数だけ返す（品物名は出さない）',
   modesForItem.modes.every((m) => 'product_category' in m && 'attached_count' in m
@@ -696,6 +702,8 @@ const legacyProducts = await (await legacyGet('/api/products')).json();
 check('共有トークン: 品物は選べるが相場は見えない',
   legacyProducts.products.every((p) => p.new_price === undefined && p.retention === undefined && p.name),
   JSON.stringify(legacyProducts.products[0]));
+check('共有トークン: 見どころ（備考）は見える',
+  legacyProducts.products.every((p) => 'notes' in p));
 check('共有トークン: スタッフも会社も開かない',
   (await legacyGet('/api/staff')).status === 403 && (await legacyGet('/api/companies')).status === 403);
 check('共有トークン: 練習はできる', (await legacyGet('/api/modes')).status === 200);

@@ -105,6 +105,18 @@ export function withFlagLabels(score, customerType) {
 }
 
 /**
+ * 練習中に受講者へ見せてよい品物。
+ *
+ * 品物そのものは目の前にあるので、状態も付属品も見どころも見えてよい。
+ * 伏せるのは**正解額**だけ。新品価格と買取率が分かると逆算できるので、それも落とす。
+ * 入手経緯も落とす（会話で聞き出すものなので、先に見えると質問が要らなくなる）。
+ */
+export const itemsForTrainee = (items = []) =>
+  items.map(({ category, brand, model, name, notes, condition_label, condition_desc, accessory_label, accessory_desc }) => ({
+    category, brand, model, name, notes, condition_label, condition_desc, accessory_label, accessory_desc,
+  }));
+
+/**
  * 品物を受講者に見せてよいかを決める。
  * 練習中に正解額が見えたら訓練にならないので、採点が終わるまでは伏せる。
  * 伏せていること自体は返す（画面に「採点後に開示」と出せるように）。
@@ -131,7 +143,7 @@ const PRODUCTS = '*';
  * 画面が自分の印とこれを見比べて、違えば再読み込みを促す。
  * **画面側を直したら、ここと docs の BUILD を同じ値にして出すこと。**
  */
-const BUILD = '2026-10-05a';
+const BUILD = '2026-10-05d';
 
 /* -------------------------------- 共通処理 -------------------------------- */
 
@@ -813,7 +825,9 @@ const routes = [
       // 現場でも品物は目の前にあり、分からないのは「いくらで買うか」のほう
       if (!hasRole(auth, 'trainer')) {
         return {
-          products: products.map(({ id, category, brand, model, name }) => ({ id, category, brand, model, name })),
+          products: products.map(({ id, category, brand, model, name, notes }) => ({
+            id, category, brand, model, name, notes,
+          })),
           categories,
         };
       }
@@ -1058,7 +1072,8 @@ const routes = [
       // 表情（mood）だけは返す。対面なら見えているものなので、音声だけの都合で奪わない
       return {
         runId, mode: modeSummary(effective), history: visibleHistory(history),
-        itemCount: items.length, replyText: turn.replyText, audioUrl: turn.audioUrl,
+        itemCount: items.length, items: itemsForTrainee(items),
+        replyText: turn.replyText, audioUrl: turn.audioUrl,
         mood: turn.mood, face: turn.face,
       };
     },

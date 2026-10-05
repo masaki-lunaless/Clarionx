@@ -155,9 +155,13 @@ OpenAI TTSの `instructions`、Aivisの `emotional_intensity` と `speaking_rate
 モードを見に行くだけでは足りず `runs.customer_type` / `runs.scenario` に持たせている
 （`listRuns` は `COALESCE(r.customer_type, m.customer_type)`）。
 
-品物は受講者にも選ばせるが、`GET /api/products` は指導者未満に対して
-`new_price` と `retention` を落として返す。現場でも品物は目の前にあり、
-分からないのは「いくらで買うか」のほうなので、相場表だけ伏せれば足りる。
+品物は受講者にも選ばせる。現場でも品物は目の前にあり、分からないのは「いくらで買うか」の
+ほうなので、**伏せるのは正解額だけ**にしてある。
+
+- `GET /api/products` は指導者未満に `new_price` と `retention` を落として返す（備考は返す）
+- 開始時は `itemsForTrainee` が `low` / `fair` / `high` / `new_price` / `retention` を落とす。
+  状態・付属品・見どころは返し、練習中ずっと手元に出す
+- `history`（入手経緯）も落とす。会話で聞き出すものなので、先に見えると質問が要らなくなる
 
 ### 間（沈黙）の計測
 
