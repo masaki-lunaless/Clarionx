@@ -12,7 +12,7 @@ import { activeProvider, listVoices, synthesize, transcribe } from './audio.js';
 import { ACCESSORIES, CONDITIONS, PRICE_PENALTY, drawItems, priceFor, pricePenalty, totalOf } from './items.js';
 import { SEED_PRODUCTS } from './seed-products.js';
 import {
-  ROLE_LIST, hashPassword, hasRole, newSessionToken, normalizeCode,
+  ROLE_LIST, hashPassword, hasRole, isSystemAdmin, newSessionToken, normalizeCode,
   requireRole, sessionDays, sha256, timingSafeEqual,
 } from './auth.js';
 import * as db from './db.js';
@@ -177,6 +177,8 @@ async function authenticate(request, env) {
         store: row.store || '',
         role: row.role,
         admin: row.role === 'admin',
+        // 会社をまたいで会社・スタッフを作れる人。環境変数で名指しする
+        system: row.role === 'admin' && isSystemAdmin(env, row.company, row.staff_code),
         via: 'login',
       };
     }
@@ -193,16 +195,21 @@ async function authenticate(request, env) {
     const idx = entry.indexOf(':');
     const name = idx === -1 ? 'client' : entry.slice(0, idx);
     const token = idx === -1 ? entry : entry.slice(idx + 1);
-    if (token && timingSafeEqual(token, supplied)) return legacyAuth(name, isLegacyAdmin(env, supplied));
+    if (token && timingSafeEqual(token, supplied)) return legacyAuth(name);
   }
   throw new ApiError(401, 'アクセストークンが違います');
 }
 
 /**
  * 共有トークンで入った場合。
- * ナレッジ空間と会社コードを同じラベルにするので、これまでのデータの見え方は変わらない。
+ *
+ * 会社コード＋パスワード＋個人コードで入る運用に移ったので、この入口は
+ * **受講者どまり**にしてある。万が一トークンが漏れても、練習と自分の記録しか
+ * 触れない。教材も設定も開かない。
+ *
+ * 完全に塞ぐなら ACCESS_TOKENS の設定ごと消す（全員がログイン必須になる）。
  */
-const legacyAuth = (label, admin = true) => ({
+const legacyAuth = (label) => ({
   client: label,
   company: label,
   companyName: label,
@@ -210,8 +217,9 @@ const legacyAuth = (label, admin = true) => ({
   staffCode: '',
   staffName: '',
   store: '',
-  role: admin ? 'admin' : 'trainee',
-  admin,
+  role: 'trainee',
+  admin: false,
+  system: false,
   via: 'token',
 });
 
@@ -219,25 +227,10 @@ function requireAdmin(auth) {
   requireRole(auth, 'admin');
 }
 
-/**
- * 共有トークンのうち管理者にするもの。
- * ADMIN_TOKENS 未設定のあいだは全員が管理者＝フルオープン。
- */
-function isLegacyAdmin(env, supplied) {
-  const raw = (env.ADMIN_TOKENS || '').trim();
-  if (!raw) return true;
-  return raw
-    .split(',')
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .some((token) => timingSafeEqual(token, supplied));
-}
-
-// 管理者を絞ると、統合（ステップ3）と削除とマスタ編集が管理者だけになる。
-// ADMIN_TOKENS に入れるトークンは、ACCESS_TOKENS にも「同じラベル」で登録すること。
-// ラベルが違うとデータの持ち主が別扱いになり、管理者から他の人のデータが見えなくなる。
-//   例) ACCESS_TOKENS = "clarion:みんなの共有トークン,clarion:管理者トークン"
-//       ADMIN_TOKENS  = "管理者トークン"
+// 会社をまたいで会社・スタッフを作れるのは SUPER_ADMINS に名指しした人だけ。
+//   例) SUPER_ADMINS = "lunaless:masaki"
+// 会社ごとの管理者は自分の会社しか触れない。そうしないと、A社の管理者が
+// B社のパスワードを変えて入れてしまう。
 
 async function readBody(request) {
   const type = request.headers.get('content-type') || '';
@@ -352,9 +345,9 @@ async function findRun(env, auth, id) {
  */
 function targetCompany(auth, requested) {
   const want = String(requested || '').trim().toLowerCase();
-  if (!want || want === auth.company) return auth.company;
-  if (auth.via === 'token' && auth.admin) return want;
-  throw new ApiError(403, '他の会社のスタッフは操作できません');
+  if (!want || want === String(auth.company).toLowerCase()) return auth.company;
+  if (auth.system) return want;
+  throw new ApiError(403, '他の会社は操作できません');
 }
 
 /** ログイン中の人の公開形。画面のタブ出し分けはこれを見て決める */
@@ -367,12 +360,14 @@ const meSummary = (auth) => ({
   store: auth.store,
   role: auth.role,
   admin: auth.admin,
+  system: Boolean(auth.system),
   via: auth.via,
   can: {
     capture: hasRole(auth, 'trainer'),   // ①蓄積
     merge: hasRole(auth, 'admin'),       // ③統合
     masters: hasRole(auth, 'admin'),     // 商品・用語マスタ
     allRecords: hasRole(auth, 'trainer'), // 他人の記録
+    companies: Boolean(auth.system),      // 会社の作成・他社のスタッフ発行
   },
 });
 
@@ -465,9 +460,11 @@ const routes = [
 
   /* ------------------------------ 会社の管理 ------------------------------ */
 
+  // 会社の一覧。自分の会社だけ見える。全部見えるのはシステム管理者だけ
   ['GET', '/api/companies', async ({ env, auth }) => {
     requireAdmin(auth);
-    return { companies: await db.listCompanies(env) };
+    const all = await db.listCompanies(env);
+    return { companies: auth.system ? all : all.filter((c) => c.code === auth.company) };
   }],
 
   // 会社の作成とパスワード変更。knowledgeSpace を同じ値にした会社どうしは教材を共有する
@@ -477,6 +474,11 @@ const routes = [
     async ({ env, auth, body }) => {
       requireAdmin(auth);
       const code = normalizeCode(body.code, '会社コード');
+      // 他社のパスワードを変えられると、その会社に入れてしまう。
+      // code は正規化で小文字になっているので、比べる相手も揃える
+      if (code !== String(auth.company).toLowerCase() && !auth.system) {
+        throw new ApiError(403, '他の会社は操作できません');
+      }
       const name = requireString(body.name, 'name', 100);
       const password = String(body.password || '');
       if (password.length < 8) throw new ApiError(400, 'パスワードは8文字以上にしてください');
@@ -497,6 +499,7 @@ const routes = [
     '/api/companies/:code',
     async ({ env, auth, params }) => {
       requireAdmin(auth);
+      if (!auth.system) throw new ApiError(403, '会社の削除はシステム管理者のみです');
       if (params.code === auth.company) throw new ApiError(400, 'ログイン中の会社は削除できません');
       await db.deleteCompany(env, params.code);
       return { ok: true };

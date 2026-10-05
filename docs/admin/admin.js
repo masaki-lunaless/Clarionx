@@ -958,8 +958,8 @@ async function loadCompanies() {
       )
       .join('')}</tbody>`;
 
-  // 共有トークンで入った管理者は会社をまたいで面倒を見るので、対象を選ばせる
-  if (me?.via === 'token' && data.companies.length) {
+  // 会社をまたげる人だけ、対象を選べるようにする
+  if (me?.can?.companies && data.companies.length > 1) {
     $('#staff-company-wrap').hidden = false;
     fillSelect(
       $('#staff-company'),

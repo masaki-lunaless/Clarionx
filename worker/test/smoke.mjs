@@ -177,7 +177,18 @@ globalThis.fetch = async (url, init = {}) => {
 
 /* --------------------------------- 実行 ---------------------------------- */
 
-const H = { 'content-type': 'application/json', 'x-clarion-token': 'secret-token', origin: 'https://example.github.io' };
+// 既定は「ログインした管理者」。共有トークンは受講者どまりになったので、
+// 管理者の操作はログイン経由でないと通らない
+const SESSION = 'a'.repeat(64);
+const adminSession = (over = {}) => ({
+  token_hash: 'x', company: 'clientA', staff_id: 'staff-admin', staff_code: 'masaki', staff_name: '正樹',
+  role: 'admin', store: '', staff_active: 1, company_active: 1, company_name: 'clientA', knowledge_space: 'clientA',
+  ...over,
+});
+const asAdmin = () => { auth.session = adminSession(); };
+asAdmin();
+
+const H = { 'content-type': 'application/json', 'x-clarion-token': SESSION, origin: 'https://example.github.io' };
 const call = (path, opts = {}, e = env) =>
   worker.fetch(new Request(`https://w.dev${path}`, { headers: H, ...opts }), e);
 const post = (path, payload, e) => call(path, { method: 'POST', body: JSON.stringify(payload) }, e);
@@ -237,13 +248,13 @@ const withFb = await (await post('/api/criteria', { caseIds: ['case1'], feedback
 check('criteria: フィードバックを使う', withFb.usedFeedback === 1, String(withFb.usedFeedback));
 check('criteria: 現場コメントがプロンプトに入る', lastClaude.messages[0].content.includes('客がやけに素直すぎる'), lastClaude.messages[0].content.slice(-200));
 
-// 管理者限定（ADMIN_TOKENS を設定したとき）
-const adminEnv = { ...env, ADMIN_TOKENS: 'admin-only-token' };
-check('統合は管理者限定にできる', (await post('/api/criteria', { caseIds: ['case1'] }, adminEnv)).status === 403);
-check('管理者トークンなら通る', (await worker.fetch(new Request('https://w.dev/api/criteria', { method: 'POST', headers: { ...H, 'x-clarion-token': 'admin-only-token' }, body: JSON.stringify({ caseIds: ['case1'] }) }), { ...adminEnv, ACCESS_TOKENS: 'clientA:admin-only-token' })).status === 200);
-check('未設定ならフルオープン', (await (await call('/api/config')).json()).admin === true);
-check('管理者を絞ると案件削除も止まる', (await call('/api/cases/case1', { method: 'DELETE' }, adminEnv)).status === 403);
-check('管理者を絞るとモード削除も止まる', (await call('/api/modes/mode1', { method: 'DELETE' }, adminEnv)).status === 403);
+// 管理者限定の操作。指導者では通らない
+auth.session = adminSession({ role: 'trainer' });
+check('統合は管理者だけ', (await post('/api/criteria', { caseIds: ['case1'] })).status === 403);
+check('案件削除も管理者だけ', (await call('/api/cases/case1', { method: 'DELETE' })).status === 403);
+check('モード削除も管理者だけ', (await call('/api/modes/mode1', { method: 'DELETE' })).status === 403);
+asAdmin();
+check('管理者なら統合できる', (await post('/api/criteria', { caseIds: ['case1'] })).status === 200);
 check('未設定なら削除できる', (await call('/api/cases/case1', { method: 'DELETE' })).status === 200);
 
 // --- 2. ロープレ ---
@@ -263,7 +274,7 @@ check('turn: 履歴が伸びる', turn.history.length === 4 && turn.history[2].t
 const form = new FormData();
 form.append('audio', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mp4' }), 'turn.mp4');
 form.append('payload', JSON.stringify({}));
-const audioTurn = await (await worker.fetch(new Request('https://w.dev/api/runs/run1/turn', { method: 'POST', headers: { 'x-clarion-token': 'secret-token' }, body: form }), env)).json();
+const audioTurn = await (await worker.fetch(new Request('https://w.dev/api/runs/run1/turn', { method: 'POST', headers: { 'x-clarion-token': SESSION }, body: form }), env)).json();
 check('turn: 音声からも受け付ける', audioTurn.transcript === 'こんにちは', JSON.stringify(audioTurn).slice(0, 120));
 
 // 期待値は配点の定数から導く（SCORINGを変えてもテストが壊れないように）
@@ -521,10 +532,10 @@ auth.session = {
   role: 'admin', store: '', staff_active: 1, company_active: 1, company_name: 'B社', knowledge_space: 'another-space',
 };
 const otherProducts = await (
-  await worker.fetch(new Request('https://w.dev/api/products', { headers: { ...H, 'x-clarion-token': 'a'.repeat(64) } }), env)
+  await worker.fetch(new Request('https://w.dev/api/products', { headers: H }), env)
 ).json();
 check('商品: 別のナレッジ空間でも同じマスタが見える', otherProducts.products.length === 1, otherProducts.products.length);
-auth.session = null;
+asAdmin();
 
 /* --------- 開始前にシチュエーションを変える --------- */
 
@@ -619,14 +630,14 @@ auth.company = { code: 'clarisse', name: 'A社', pass_hash: hash, pass_salt: sal
 
 /* --------- セッションで入ったときの見え方 --------- */
 
-const sessionToken = 'a'.repeat(64);
+const sessionToken = SESSION;
 const asStaff = (role, extra = {}) => {
-  auth.session = {
-    token_hash: 'x', company: 'clarisse', staff_id: 'staff-1', staff_code: '1001', staff_name: '田中',
-    role, store: '千葉店', staff_active: 1, company_active: 1, company_name: 'A社', knowledge_space: 'shared',
+  auth.session = adminSession({
+    company: 'clarisse', staff_id: 'staff-1', staff_code: '1001', staff_name: '田中',
+    role, store: '千葉店', company_name: 'A社', knowledge_space: 'shared',
     ...extra,
-  };
-  return { ...H, 'x-clarion-token': sessionToken };
+  });
+  return H;
 };
 
 const asGet = (path, headers) => worker.fetch(new Request(`https://w.dev${path}`, { headers }), env);
@@ -660,22 +671,61 @@ check('記録: 会社コードで必ず絞る', sqlLog.some((q) => q.includes('r
 
 // 期限切れセッション。共有トークンとして照合し直したりはしない
 auth.session = null;
-check('セッション: 切れていれば401',
-  (await asGet('/api/me', { ...H, 'x-clarion-token': sessionToken })).status === 401);
+check('セッション: 切れていれば401', (await asGet('/api/me', H)).status === 401);
 
 // 停止したスタッフ
 auth.session = {
   token_hash: 'x', company: 'clarisse', staff_id: 'staff-1', staff_code: '1001', staff_name: '田中',
   role: 'admin', store: '', staff_active: 0, company_active: 1, company_name: 'A社', knowledge_space: 'shared',
 };
-check('セッション: 停止したスタッフは弾く', (await asGet('/api/me', { ...H, 'x-clarion-token': sessionToken })).status === 401);
-auth.session = null;
+check('セッション: 停止したスタッフは弾く', (await asGet('/api/me', H)).status === 401);
+asAdmin();
 
-// 共有トークンはこれまでどおり管理者として通る
-check('移行: 共有トークンは今までどおり通る', (await call('/api/health')).status === 200);
-const legacyMe = await (await call('/api/me')).json();
-check('移行: 共有トークンは管理者扱い', legacyMe.me.role === 'admin' && legacyMe.me.via === 'token');
-check('移行: 共有トークンは会社＝ナレッジ空間', legacyMe.me.company === legacyMe.me.knowledge_space);
+/* --------- 共有トークンは受講者どまり --------- */
+
+// 会社コード＋パスワード＋個人コードで入る運用に移ったので、この入口は
+// 万が一漏れても練習と自分の記録しか触れない
+const legacyH = { ...H, 'x-clarion-token': 'secret-token' };
+const legacyGet = (path) => worker.fetch(new Request(`https://w.dev${path}`, { headers: legacyH }), env);
+const legacyMe = await (await legacyGet('/api/me')).json();
+check('共有トークン: 受講者どまり', legacyMe.me.role === 'trainee' && legacyMe.me.via === 'token', legacyMe.me.role);
+check('共有トークン: 何も作れない・直せない',
+  Object.values(legacyMe.me.can).every((v) => v === false), JSON.stringify(legacyMe.me.can));
+check('共有トークン: 教材は開かない', (await legacyGet('/api/cases')).status === 403);
+const legacyProducts = await (await legacyGet('/api/products')).json();
+check('共有トークン: 品物は選べるが相場は見えない',
+  legacyProducts.products.every((p) => p.new_price === undefined && p.retention === undefined && p.name),
+  JSON.stringify(legacyProducts.products[0]));
+check('共有トークン: スタッフも会社も開かない',
+  (await legacyGet('/api/staff')).status === 403 && (await legacyGet('/api/companies')).status === 403);
+check('共有トークン: 練習はできる', (await legacyGet('/api/modes')).status === 200);
+
+/* --------- 会社をまたげるのはシステム管理者だけ --------- */
+
+// 会社ごとの管理者に他社を触らせると、B社のパスワードを変えて入れてしまう
+const sysEnv = { ...env, SUPER_ADMINS: 'clientA:masaki' };
+const sysPost = (path, payload) =>
+  worker.fetch(new Request(`https://w.dev${path}`, { method: 'POST', headers: H, body: JSON.stringify(payload) }), sysEnv);
+const plainPost = (path, payload) =>
+  worker.fetch(new Request(`https://w.dev${path}`, { method: 'POST', headers: H, body: JSON.stringify(payload) }), env);
+
+check('会社: ふつうの管理者は他社を作れない',
+  (await plainPost('/api/companies', { code: 'other', name: 'B社', password: 'password123' })).status === 403);
+check('会社: 自分の会社のパスワードは変えられる',
+  (await plainPost('/api/companies', { code: 'clientA', name: '自社', password: 'password123' })).status === 200);
+check('会社: システム管理者なら他社も作れる',
+  (await sysPost('/api/companies', { code: 'other', name: 'B社', password: 'password123' })).status === 200);
+check('会社: ふつうの管理者は他社のスタッフを発行できない',
+  (await plainPost('/api/staff', { code: '7001', name: '誰か', company: 'other' })).status === 403);
+auth.staff = null; // 既存チェックに引っかからないように
+check('会社: システム管理者なら発行できる',
+  (await sysPost('/api/staff', { code: '7001', name: '誰か', company: 'other' })).status === 200);
+check('会社: 一覧は自分の会社だけ',
+  (await (await call('/api/companies')).json()).companies.every((c) => c.code === 'clientA'));
+check('会社: システム管理者には全部見える',
+  (await (await worker.fetch(new Request('https://w.dev/api/companies', { headers: H }), sysEnv)).json()).companies.length === 1);
+check('会社: 削除はシステム管理者だけ',
+  (await call('/api/companies/other', { method: 'DELETE' })).status === 403);
 
 /* ======================= 2つのトラックと心境 ========================= */
 

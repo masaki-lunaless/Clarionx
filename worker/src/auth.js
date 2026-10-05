@@ -69,3 +69,23 @@ export function normalizeCode(value, name) {
   }
   return code;
 }
+
+/**
+ * システム管理者。会社をまたいで、会社の作成とスタッフの発行ができる人。
+ *
+ * 会社ごとの管理者は自分の会社しか触れない。そうしないと、A社の管理者が
+ * B社のパスワードを変えて入れてしまう。一方で誰かが最初の会社と
+ * スタッフを作る必要があるので、その役をここで名指しする。
+ *
+ * 設定形式: SUPER_ADMINS = "lunaless:masaki,other:9001"（会社コード:個人コード）
+ */
+export function isSystemAdmin(env, company, staffCode) {
+  const raw = (env.SUPER_ADMINS || '').trim();
+  if (!raw || !company || !staffCode) return false;
+  const me = `${company}:${staffCode}`.toLowerCase();
+  return raw
+    .split(',')
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .some((entry) => entry === me);
+}
