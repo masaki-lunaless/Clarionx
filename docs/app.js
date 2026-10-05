@@ -9,7 +9,7 @@ import { settings } from './store.js';
 let config = { customerTypes: [], voices: [], feedbackOptions: { realism: [], scoring: [] }, admin: true };
 let criteriaList = []; // 記録の絞り込みに使うだけ（本文は持たない）
 let modes = [];
-let current = { assignmentId: null, run: null };
+let current = { modeId: null, run: null };
 
 /* ---------------------------------- タブ --------------------------------- */
 
@@ -26,7 +26,7 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
 
 // GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
 // 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
-const BUILD = '2026-10-05b';
+const BUILD = '2026-10-05a';
 
 function checkBuild(cfg) {
   if (!cfg?.build || cfg.build === BUILD) return;
@@ -160,53 +160,136 @@ function applyConfig(cfg) {
 
 /* ------------------------------ ② ロープレ ------------------------------ */
 
-/**
- * 自分に出ている課題。
- * シチュエーション（客タイプ・品物・難易度）は管理者が決めたもので、
- * 受講者は選べない。選べると、やさしい設定と知っている品物を選んでしまう。
- */
 async function refreshModes() {
-  const data = await api.assignments().catch(() => null);
+  const data = await api.listModes().catch(() => null);
   if (!data) return;
-  modes = data.assignments;
-  config.difficulties = data.difficulties || config.difficulties;
+  modes = data.modes;
   renderModeList();
 }
-
-const typeLabel = (id) => (config.customerTypes || []).find((t) => t.id === id)?.label || id || '';
-const difficultyLabel = (id) => (config.difficulties || []).find((d) => d.id === id)?.label || '';
 
 function renderModeList() {
   $('#mode-list').innerHTML = modes.length
     ? modes
         .map(
-          (a) => `<li><button class="item ${a.id === current.assignmentId ? 'is-active' : ''}" data-id="${esc(a.id)}">
-            <span class="item-name">${esc(a.mode_name)}</span>
-            <span class="item-meta">${esc(typeLabel(a.customer_type))}・${esc(difficultyLabel(a.difficulty))}${a.staff_id ? '・あなた宛' : ''}${a.my_runs ? `・${a.my_runs}回` : ''}</span>
+          (m) => `<li><button class="item ${m.id === current.modeId ? 'is-active' : ''}" data-id="${m.id}">
+            <span class="item-name">${esc(m.name)}</span>
+            <span class="item-meta">${esc(m.criteria_title)}・実施${m.run_count}回${m.attached_count ? `・持ち込み${m.attached_count}点` : ''}</span>
           </button></li>`,
         )
         .join('')
-    : '<li class="empty-note">まだ課題が出ていません</li>';
+    : '<li class="empty-note">③でモードを作ってください</li>';
 }
 
 $('#mode-list').addEventListener('click', (e) => {
   const btn = e.target.closest('.item');
   if (!btn) return;
-  current.assignmentId = btn.dataset.id;
-  const a = modes.find((x) => x.id === current.assignmentId);
+  current.modeId = btn.dataset.id;
+  const mode = modes.find((m) => m.id === current.modeId);
   renderModeList();
   $('#practice-empty').hidden = true;
   $('#practice-body').hidden = false;
-  $('#run-mode-name').textContent = a.mode_name;
-  $('#run-mode-detail').textContent =
-    `${typeLabel(a.customer_type)}・${difficultyLabel(a.difficulty)}${a.scenario ? ` ／ ${a.scenario}` : ''}`;
-  const note = $('#run-note');
-  note.hidden = !a.note;
-  note.textContent = a.note ? `管理者から：${a.note}` : '';
+  $('#run-mode-name').textContent = mode.name;
+  $('#run-mode-detail').textContent = `${config.customerTypes.find((t) => t.id === mode.customer_type)?.label || mode.customer_type}${mode.scenario ? ` ／ ${mode.scenario}` : ''}`;
   $('#convo').innerHTML = '';
   $('#score-result').innerHTML = '';
   $('#feedback-box').hidden = true;
+  resetSituation(mode);
   setPractice(false);
+});
+
+/* ------------------------- シチュエーションの差し替え --------------------- */
+
+// 開始前にその回だけ設定を変える。モードそのものには触らない。
+// 品物は受講者にも選ばせるが、相場はWorker側で落として返している
+// （現場でも品物は目の前にあり、分からないのは「いくらで買うか」のほう）。
+let situationProducts = [];
+let pickedForRun = new Set();
+
+function resetSituation(mode) {
+  pickedForRun = new Set();
+  const typeSel = $('#run-customer');
+  if (typeSel) {
+    typeSel.innerHTML = (config.customerTypes || [])
+      .map((t) => `<option value="${esc(t.id)}" ${t.id === mode.customer_type ? 'selected' : ''}>${esc(t.label)}</option>`)
+      .join('');
+  }
+  const scen = $('#run-scenario');
+  if (scen) scen.value = mode.scenario || '';
+  const cat = $('#run-category');
+  if (cat) cat.value = mode.product_category || '';
+  const diff = $('#run-difficulty');
+  if (diff) {
+    diff.innerHTML = (config.difficulties || [])
+      .map((d) => `<option value="${esc(d.id)}" ${d.id === 'normal' ? 'selected' : ''}>${esc(d.label)}｜${esc(d.hint)}</option>`)
+      .join('');
+  }
+  renderRunProducts();
+  $('#situation').open = false;
+}
+
+async function loadSituationProducts() {
+  const data = await api.listProducts().catch(() => null);
+  situationProducts = data?.products || [];
+  const cat = $('#run-category');
+  if (cat) {
+    const keep = cat.value;
+    cat.innerHTML = ['<option value="">すべてのカテゴリ</option>',
+      ...(data?.categories || []).map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+    cat.value = keep;
+  }
+  renderRunProducts();
+}
+
+// 現場では「バッグと指輪」のようにカテゴリをまたいで持ってくる。
+// カテゴリは絞り込みにしか使わず、選んだものは常に上に出す。
+function renderRunProducts() {
+  const box = $('#run-products');
+  if (!box) return;
+  const chosen = situationProducts.filter((p) => pickedForRun.has(p.id));
+  const picked = $('#run-picked');
+  if (picked) {
+    picked.innerHTML = chosen.length
+      ? `<div class="chips">${chosen
+          .map(
+            (p) => `<span class="chip">${esc([p.brand, p.name].filter(Boolean).join(' '))}
+              <button type="button" class="chip-x" data-unpick="${esc(p.id)}" aria-label="外す">×</button></span>`,
+          )
+          .join('')}</div>
+         <p class="hint">${chosen.length}点をまとめて持ってきます</p>`
+      : '';
+  }
+  const cat = $('#run-category')?.value || '';
+  const pool = cat ? situationProducts.filter((p) => p.category === cat) : situationProducts;
+  box.innerHTML = pool.length
+    ? pool
+        .map(
+          (p) => `<label class="check">
+            <input type="checkbox" value="${esc(p.id)}" ${pickedForRun.has(p.id) ? 'checked' : ''}>
+            <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}<em class="item-meta">${esc(p.category)}</em></span>
+          </label>`,
+        )
+        .join('')
+    : '<p class="hint">このカテゴリに品物がありません。</p>';
+}
+
+$('#run-picked')?.addEventListener('click', (e) => {
+  const id = e.target.dataset.unpick;
+  if (!id) return;
+  pickedForRun.delete(id);
+  renderRunProducts();
+});
+
+$('#run-category')?.addEventListener('change', renderRunProducts);
+$('#run-products')?.addEventListener('change', (e) => {
+  const cb = e.target.closest('input[type=checkbox]');
+  if (!cb) return;
+  if (cb.checked) pickedForRun.add(cb.value);
+  else pickedForRun.delete(cb.value);
+  renderRunProducts();
+});
+$('#situation-reset')?.addEventListener('click', () => {
+  const mode = modes.find((m) => m.id === current.modeId);
+  if (mode) resetSituation(mode);
 });
 
 function setPractice(on) {
@@ -222,7 +305,14 @@ $('#start-run').addEventListener('click', async (e) => {
   $('#score-result').innerHTML = '';
   $('#feedback-box').hidden = true;
   const out = await run(e.target, $('#practice-status'), 'お客様が来店中…', () =>
-    api.startRun(current.assignmentId, settings.get('trainee')),
+    api.startRun(current.modeId, settings.get('trainee'), {
+      customerType: $('#run-customer')?.value || undefined,
+      scenario: $('#run-scenario')?.value,
+      category: $('#run-category')?.value || undefined,
+      difficulty: $('#run-difficulty')?.value || undefined,
+      itemCount: Number($('#run-item-count')?.value) || undefined,
+      productIds: [...pickedForRun],
+    }),
   );
   if (!out) return;
   current.run = out.runId;
@@ -405,6 +495,7 @@ let recordScope = 'company';
 
 const OUTCOME = (r) => (r.score ? (r.score.breakdown?.closed ? '成約' : '不成約') : '—');
 const fbLabel = (kind, v) => config.feedbackOptions[kind]?.find((o) => o.value === v)?.label || '';
+const typeLabel = (id) => config.customerTypes.find((t) => t.id === id)?.label || id || '';
 const when = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
 
 // 採点が済むまで品物は伏せたまま返ってくる（Worker側の visibleItems）
@@ -684,7 +775,8 @@ function setRecordingUI(on) {
 /* -------------------------------- 初期化 -------------------------------- */
 
 async function refreshAll() {
-  await Promise.all([refreshCriteria(), refreshModes()]);
+  await Promise.all([refreshCriteria(), refreshModes(), loadSituationProducts()]);
+  renderModeList();
 }
 
 (async function start() {

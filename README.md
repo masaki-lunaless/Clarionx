@@ -148,17 +148,16 @@ OpenAI TTSの `instructions`、Aivisの `emotional_intensity` と `speaking_rate
 許容幅は `priceFor(product, condition, accessory, tolerance)` で正解レンジ自体を広げる。
 採点時に緩めると、画面に出る「適正◯〜◯」と実際に採点された幅がずれるため。
 
-### 課題の割り当て
+### 開始前のシチュエーション差し替え
 
-シチュエーションを受講者本人に選ばせると、やさしい設定と知っている品物を選べてしまい
-訓練にならない。管理者が `assignments`（人 × モード × 難易度 × ひとこと）で出す。
-`staff_id` が NULL なら会社の全員向け。
+`POST /api/runs` は `customerType` / `scenario` / `productIds` / `category` を受け、
+その回だけモードの既定を上書きする。採点も上書き後の客タイプで行うため、
+モードを見に行くだけでは足りず `runs.customer_type` / `runs.scenario` に持たせている
+（`listRuns` は `COALESCE(r.customer_type, m.customer_type)`）。
 
-- 受講者が見るのは `GET /api/assignments`（自分に出ているものだけ）。`GET /api/modes` は指導者以上
-- `POST /api/runs` は `assignmentId` で始める。難易度は割り当てから取る
-- `customerType` / `scenario` / `productIds` / `difficulty` の差し替えは**指導者以上だけ**受け付ける
-  （教材の確認用）。採点も差し替え後の客タイプで行うため `runs.customer_type` に持たせている
-- 客タイプ・品物・場面設定・持ち込み点数はモードが持つ。難易度だけ割り当て側（人で変えたいため）
+品物は受講者にも選ばせるが、`GET /api/products` は指導者未満に対して
+`new_price` と `retention` を落として返す。現場でも品物は目の前にあり、
+分からないのは「いくらで買うか」のほうなので、相場表だけ伏せれば足りる。
 
 ### 間（沈黙）の計測
 

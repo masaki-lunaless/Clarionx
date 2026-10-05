@@ -128,36 +128,7 @@
         <details class="block" id="mode-manage" open>
           <summary>ロープレモードの管理（すべて）</summary>
           <ul class="list" id="admin-mode-list"></ul>
-          <p class="hint">削除すると割り当ても消えます。<strong>実施済みの記録は残ります。</strong></p>
-        </details>
-
-        <details class="block" id="assign-manage" open>
-          <summary>誰にどの課題を出すか</summary>
-          <p class="hint">
-            <strong>受講者はここで出した課題しか練習できません。</strong>客タイプ・品物・場面設定はモードが持ち、
-            難易度はこの割り当てごとに決めます。受講者の側では何も変えられません。
-          </p>
-          <div class="table-wrap">
-            <table class="records" id="assign-table"></table>
-          </div>
-          <div class="fb-grid">
-            <label class="label">モード
-              <select class="input" id="assign-mode"></select>
-            </label>
-            <label class="label">誰に
-              <select class="input" id="assign-staff"></select>
-            </label>
-            <label class="label">難易度
-              <select class="input" id="assign-difficulty"></select>
-            </label>
-            <label class="label">ひとこと（受講者の画面に出ます）
-              <input class="input" id="assign-note" placeholder="例：金額を出す前に、迷っている理由を聞く">
-            </label>
-          </div>
-          <div class="row row-actions">
-            <button class="btn btn-primary" id="add-assign">課題を出す</button>
-            <span class="status" id="assign-status"></span>
-          </div>
+          <p class="hint">削除すると受講者の一覧から消えます。<strong>実施済みの記録は残ります。</strong></p>
         </details>
         <div id="criteria-feedback"></div>
         <textarea class="input textarea-doc" id="criteria-doc" placeholder="統合した判断基準がここに出ます。編集すると自動保存されます。"></textarea>
@@ -346,13 +317,6 @@
     </label>
     <label class="label">カテゴリ（絞り込み／未選択ならここからランダム）
       <select class="input" id="mode-category"></select>
-    </label>
-    <label class="label">品物を選ばないときの持ち込み点数
-      <select class="input" id="mode-item-count">
-        <option value="1">1点</option>
-        <option value="2">2点</option>
-        <option value="3">3点</option>
-      </select>
     </label>
     <label class="label">持ち込む品物（任意・複数可）
       <div id="mode-picked"></div>

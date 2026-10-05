@@ -107,13 +107,8 @@ export const api = {
   createMode: (data) => request('POST', '/api/modes', data),
   deleteMode: (id) => request('DELETE', `/api/modes/${id}`),
   listRuns: (criteriaId) => request('GET', `/api/runs${criteriaId ? `?criteriaId=${criteriaId}` : ''}`),
-  // 課題から始める。シチュエーションは管理者が決めたものを使う
-  assignments: () => request('GET', '/api/assignments'),
-  startRun: (assignmentId, trainee) => request('POST', '/api/runs', { assignmentId, trainee }),
-  // 管理用
-  listAssignments: () => request('GET', '/api/assignments/all'),
-  createAssignment: (data) => request('POST', '/api/assignments', data),
-  deleteAssignment: (id) => request('DELETE', `/api/assignments/${id}`),
+  // situation は開始前の差し替え（客タイプ・品物・場面設定）。その回だけ効く
+  startRun: (modeId, trainee, situation = {}) => request('POST', '/api/runs', { modeId, trainee, ...situation }),
   // timing は「間」の計測値。画面には出さないが、採点の材料として送る
   turn: (runId, { text, audio, filename, payload, timing }) =>
     audio

@@ -283,14 +283,13 @@ export async function createMode(env, client, data) {
   const id = uid();
   await db(env)
     .prepare(
-      `INSERT INTO modes (id, client, name, criteria_id, customer_type, scenario, voice,
-                          product_id, product_category, item_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO modes (id, client, name, criteria_id, customer_type, scenario, voice, product_id, product_category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, client, data.name, data.criteriaId, data.customerType,
       data.scenario || '', data.voice || '',
-      null, data.productCategory || '', data.itemCount || 1, now(),
+      data.productId || null, data.productCategory || '', now(),
     )
     .run();
   return getMode(env, client, id);
@@ -727,77 +726,4 @@ export async function findSession(env, tokenHash) {
 
 export async function deleteSession(env, tokenHash) {
   await db(env).prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
-}
-
-/* ------------------------------ 課題の割り当て ---------------------------- */
-
-/**
- * その人に割り当てられた課題。
- * staff_id が NULL の行は会社の全員向け。
- * 指導者以上は一覧の管理が要るので、別で listAssignments を使う。
- */
-export async function assignmentsFor(env, company, staffId) {
-  const { results } = await db(env)
-    .prepare(
-      `SELECT a.*, m.name AS mode_name, m.customer_type, m.scenario, m.criteria_id, m.product_category,
-              cr.title AS criteria_title,
-              (SELECT COUNT(*) FROM mode_products mp WHERE mp.mode_id = m.id) AS attached_count,
-              (SELECT COUNT(*) FROM runs r WHERE r.mode_id = m.id AND r.client = ? AND r.staff_id = ?) AS my_runs
-         FROM assignments a
-         JOIN modes m ON m.id = a.mode_id
-         JOIN criteria cr ON cr.id = m.criteria_id
-        WHERE a.company = ? AND a.active = 1 AND (a.staff_id IS NULL OR a.staff_id = ?)
-        ORDER BY a.staff_id IS NULL, a.created_at`,
-    )
-    .bind(company, staffId || '', company, staffId || '')
-    .all();
-  return results || [];
-}
-
-export async function listAssignments(env, company) {
-  const { results } = await db(env)
-    .prepare(
-      `SELECT a.*, m.name AS mode_name, s.name AS staff_name, s.code AS staff_code
-         FROM assignments a
-         JOIN modes m ON m.id = a.mode_id
-         LEFT JOIN staff s ON s.id = a.staff_id
-        WHERE a.company = ?
-        ORDER BY a.active DESC, a.created_at DESC`,
-    )
-    .bind(company)
-    .all();
-  return results || [];
-}
-
-export async function getAssignment(env, company, id) {
-  const row = await db(env)
-    .prepare(
-      `SELECT a.*, m.customer_type, m.scenario, m.product_category, m.item_count
-         FROM assignments a JOIN modes m ON m.id = a.mode_id
-        WHERE a.id = ? AND a.company = ? AND a.active = 1`,
-    )
-    .bind(id, company)
-    .first();
-  if (!row) throw new ApiError(404, '課題が見つかりません');
-  return row;
-}
-
-export async function createAssignment(env, company, { staffId, modeId, difficulty, note }) {
-  const id = uid();
-  await db(env)
-    .prepare(
-      `INSERT INTO assignments (id, company, staff_id, mode_id, difficulty, note, active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
-    )
-    .bind(id, company, staffId || null, modeId, difficulty || 'normal', note || '', now())
-    .run();
-  return id;
-}
-
-export async function deleteAssignment(env, company, id) {
-  const res = await db(env)
-    .prepare('DELETE FROM assignments WHERE id = ? AND company = ?')
-    .bind(id, company)
-    .run();
-  if (!res.meta?.changes) throw new ApiError(404, '課題が見つかりません');
 }

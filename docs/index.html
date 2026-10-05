@@ -72,7 +72,7 @@
     <div class="split">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <h2>あなたへの課題</h2>
+          <h2>練習する設定</h2>
         </div>
         <ul class="list" id="mode-list"></ul>
         <div class="sidebar-foot" id="trainee-wrap" hidden>
@@ -87,7 +87,6 @@
           <p><strong>AIのお客様を相手に、接客を練習する場所です。</strong></p>
           <p>左の一覧から練習したい設定を選んで「開始」を押してください。<br>
              マイクで話しかけると、お客様が声で返します。終わったら採点されます。</p>
-          <p>課題は管理者が割り当てます。出ていないときは管理者に声をかけてください。</p>
         </div>
 
         <div id="practice-body" hidden>
@@ -95,11 +94,42 @@
             <div>
               <strong id="run-mode-name"></strong>
               <span class="hint" id="run-mode-detail"></span>
-              <p class="lede" id="run-note" hidden></p>
             </div>
             <button class="btn btn-primary" id="start-run">開始</button>
           </div>
 
+          <details class="block" id="situation">
+            <summary>シチュエーションを変える</summary>
+            <p class="hint">この回だけ設定を差し替えます。モードそのものは変わりません。</p>
+            <div class="fb-grid">
+              <label class="label">客のタイプ
+                <select class="input" id="run-customer"></select>
+              </label>
+              <label class="label">カテゴリ（絞り込み）
+                <select class="input" id="run-category"></select>
+              </label>
+              <label class="label">品物を選ばないときの持ち込み点数
+                <select class="input" id="run-item-count">
+                  <option value="1">1点</option>
+                  <option value="2">2点</option>
+                  <option value="3">3点</option>
+                </select>
+              </label>
+              <label class="label">難易度
+                <select class="input" id="run-difficulty"></select>
+              </label>
+            </div>
+            <label class="label">持ち込む品物（複数可・カテゴリをまたいで選べます）
+              <div id="run-picked"></div>
+              <div class="picker" id="run-products"></div>
+            </label>
+            <label class="label">場面設定
+              <textarea class="input" id="run-scenario" rows="2" placeholder="例：閉店30分前。他店で3万円と言われている。"></textarea>
+            </label>
+            <div class="row row-actions">
+              <button class="btn btn-ghost btn-sm" id="situation-reset">モードの設定に戻す</button>
+            </div>
+          </details>
 
           <div class="convo" id="convo"></div>
 

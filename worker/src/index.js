@@ -131,7 +131,7 @@ const PRODUCTS = '*';
  * 画面が自分の印とこれを見比べて、違えば再読み込みを促す。
  * **画面側を直したら、ここと docs の BUILD を同じ値にして出すこと。**
  */
-const BUILD = '2026-10-05b';
+const BUILD = '2026-10-05a';
 
 /* -------------------------------- 共通処理 -------------------------------- */
 
@@ -924,11 +924,9 @@ const routes = [
 
   /* ----------------------------- 2. ロープレ ---------------------------- */
 
-  // 教材の管理用。受講者は /api/assignments を見るので、ここは指導者以上に限る
-  ['GET', '/api/modes', async ({ env, auth }) => {
-    requireRole(auth, 'trainer');
-    return { modes: (await db.listModes(env, auth.client, auth.company)).map((m) => modeSummary(m)) };
-  }],
+  ['GET', '/api/modes', async ({ env, auth }) => ({
+    modes: (await db.listModes(env, auth.client, auth.company)).map((m) => modeSummary(m, { admin: auth.admin })),
+  })],
 
   [
     'POST',
@@ -947,12 +945,11 @@ const routes = [
         scenario: body.scenario,
         voice: body.voice,
         productCategory: String(body.productCategory || '').trim(),
-        itemCount: Math.min(3, Math.max(1, Math.round(Number(body.itemCount)) || 1)),
       });
       // 持ち込む品物。複数点を付けられる（バッグと財布、など）
       const ids = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
       if (ids.length) await db.setModeProducts(env, PRODUCTS, mode.id, ids);
-      return { mode: modeSummary(mode), products: await db.listModeProducts(env, mode.id) };
+      return { mode: modeSummary(mode, { admin: auth.admin }), products: await db.listModeProducts(env, mode.id) };
     },
   ],
 
@@ -989,48 +986,6 @@ const routes = [
     },
   ],
 
-  /* ------------------------------ 課題の割り当て -------------------------- */
-
-  // 受講者はこれしか見ない。自分に割り当てられたものだけ
-  ['GET', '/api/assignments', async ({ env, auth }) => ({
-    assignments: await db.assignmentsFor(env, auth.company, auth.staffId),
-    difficulties: DIFFICULTIES.map(({ id, label }) => ({ id, label })),
-  })],
-
-  // 管理用の一覧。誰に何が出ているか
-  ['GET', '/api/assignments/all', async ({ env, auth }) => {
-    requireAdmin(auth);
-    return { assignments: await db.listAssignments(env, auth.company) };
-  }],
-
-  [
-    'POST',
-    '/api/assignments',
-    async ({ env, auth, body }) => {
-      requireAdmin(auth);
-      const modeId = requireString(body.modeId, 'modeId', 100);
-      await db.getMode(env, auth.client, modeId); // 存在確認
-      const difficulty = DIFFICULTIES.some((d) => d.id === body.difficulty) ? body.difficulty : 'normal';
-      const id = await db.createAssignment(env, auth.company, {
-        staffId: body.staffId || null, // 空なら会社の全員
-        modeId,
-        difficulty,
-        note: String(body.note || '').slice(0, 500),
-      });
-      return { id, assignments: await db.listAssignments(env, auth.company) };
-    },
-  ],
-
-  [
-    'DELETE',
-    '/api/assignments/:id',
-    async ({ env, auth, params }) => {
-      requireAdmin(auth);
-      await db.deleteAssignment(env, auth.company, params.id);
-      return { ok: true };
-    },
-  ],
-
   // 記録。会社をまたいでは見えない。受講者はさらに自分の分だけになる
   ['GET', '/api/runs', async ({ env, auth, url }) => ({
     runs: (
@@ -1047,25 +1002,14 @@ const routes = [
     'POST',
     '/api/runs',
     async ({ env, auth, body }) => {
-      // 課題（割り当て）から始めるのが基本。シチュエーションは管理者が決めたもの。
-      // 受講者に選ばせると、やさしい設定と知っている品物を選べてしまい訓練にならない。
-      const assignment = body.assignmentId
-        ? await db.getAssignment(env, auth.company, body.assignmentId)
-        : null;
-      const modeId = assignment?.mode_id || requireString(body.modeId, 'modeId', 100);
-      const mode = await db.getMode(env, auth.client, modeId);
+      const mode = await db.getMode(env, auth.client, requireString(body.modeId, 'modeId', 100));
 
-      // 指導者以上だけは、教材の確認のためにその場で差し替えられる
-      const mayOverride = hasRole(auth, 'trainer');
-      const pickId = (v, list) => (list.some((x) => x.id === v) ? v : null);
-      const customerType = mayOverride ? pickId(body.customerType, CUSTOMER_TYPES) : null;
-      const scenario = mayOverride && body.scenario !== undefined ? String(body.scenario).slice(0, 2000) : null;
-      const picked = mayOverride
-        ? [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10)
-        : [];
-      const difficulty =
-        (mayOverride && pickId(body.difficulty, DIFFICULTIES)) || assignment?.difficulty || 'normal';
-
+      // 開始前にシチュエーションを変えられる。変えた内容はその回だけに効く。
+      // 採点も変えた後の客タイプで行うので、モードではなく回のほうに持たせる
+      const customerType = CUSTOMER_TYPES.some((t) => t.id === body.customerType) ? body.customerType : null;
+      const scenario = body.scenario === undefined ? null : String(body.scenario).slice(0, 2000);
+      const picked = [...new Set((body.productIds || []).map((x) => String(x)))].slice(0, 10);
+      const difficulty = DIFFICULTIES.some((d) => d.id === body.difficulty) ? body.difficulty : 'normal';
       const effective = {
         ...mode,
         customer_type: customerType || mode.customer_type,
@@ -1075,7 +1019,11 @@ const routes = [
 
       // 品物はここで引き、状態と正解額まで固めて run に保存する。
       // 会話の途中で作ると毎ターン変わってしまうため、開始時に一度だけ決める。
+      //
+      // シナリオに品物が付いていればそれを全部（「バッグと財布」のような持ち込み）。
+      // 付いていなければカテゴリから1点を引く。マスタが空なら品物なしで動かす。
       let items = [];
+      // 開始前に選び直していればそれを、無ければシナリオに付いているものを
       const attached = picked.length
         ? (await db.listProducts(env, PRODUCTS)).filter((p) => picked.includes(p.id))
         : await db.listModeProducts(env, mode.id);
@@ -1083,9 +1031,9 @@ const routes = [
         items = drawItems(attached, difficultyOf(difficulty).tolerance);
       } else if (await db.countProducts(env, PRODUCTS)) {
         // 現場では1人が複数点を持ってくる。カテゴリを絞らなければまたいで引く
-        const count = Math.min(3, Math.max(1, Math.round(Number(mode.item_count)) || 1));
+        const count = Math.min(3, Math.max(1, Math.round(Number(body.itemCount)) || 1));
         items = drawItems(
-          await db.drawProducts(env, PRODUCTS, { category: mode.product_category, count }),
+          await db.drawProducts(env, PRODUCTS, { category: body.category || mode.product_category, count }),
           difficultyOf(difficulty).tolerance,
         );
       }
@@ -1109,8 +1057,7 @@ const routes = [
       // item も flags も返さない。正解が見えたら訓練にならない。
       // 表情（mood）だけは返す。対面なら見えているものなので、音声だけの都合で奪わない
       return {
-        runId, mode: modeSummary(effective), note: assignment?.note || '',
-        history: visibleHistory(history),
+        runId, mode: modeSummary(effective), history: visibleHistory(history),
         itemCount: items.length, replyText: turn.replyText, audioUrl: turn.audioUrl,
         mood: turn.mood, face: turn.face,
       };
@@ -1245,7 +1192,7 @@ const contextOf = (c) => [c.ace_name && `対象者：${c.ace_name}`, c.context].
  * product_id と品物名も返さない。どの品物が出るか分かると、事前に相場を調べられてしまう。
  * カテゴリだけは場面設定の一部なので返す。
  */
-const modeSummary = (m) => ({
+const modeSummary = (m, { admin = false } = {}) => ({
   id: m.id,
   name: m.name,
   criteria_id: m.criteria_id,
