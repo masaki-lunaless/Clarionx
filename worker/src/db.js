@@ -471,19 +471,23 @@ export async function getProduct(env, client, id) {
   return row;
 }
 
-/** モードの指定に合う品物を1点引く。指定が無ければマスタ全体から */
-export async function drawProduct(env, client, { productId, category } = {}) {
-  if (productId) return getProduct(env, client, productId);
+/**
+ * 指定が無いときに品物を引く。
+ * カテゴリを絞らなければ、バッグと指輪のようにまたいで引ける。
+ * 同じ品物は2度引かない（同じリングを2つ持ってくる客はいない）。
+ */
+export async function drawProducts(env, client, { category, count = 1 } = {}) {
   const pool = await listProducts(env, client, { category, activeOnly: true });
   if (!pool.length) {
     throw new ApiError(
       400,
       category
-        ? `商品マスタに「${category}」の品物がありません。設定タブで登録してください`
-        : '商品マスタが空です。設定タブでサンプルを読み込むか、商品を登録してください',
+        ? `商品マスタに「${category}」の品物がありません。制作画面の商品マスタで登録してください`
+        : '商品マスタが空です。制作画面の商品マスタで、サンプルを足すか商品を登録してください',
     );
   }
-  return pool[Math.floor(Math.random() * pool.length)];
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, Math.min(Math.max(1, count), pool.length));
 }
 
 /** 1件ずつ足す。総入れ替えはしない（消したくないものまで消えるため） */

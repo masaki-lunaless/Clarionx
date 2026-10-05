@@ -13,12 +13,13 @@
     <span class="tagline">教材をつくる・運用する</span>
   </div>
   <nav class="tabs" role="tablist">
+    <span class="tab-group" data-requires="capture">教材</span>
     <button class="tab is-active" data-tab="capture" role="tab" data-requires="capture">① 接客を集める</button>
-    <button class="tab" data-tab="merge" role="tab" data-requires="merge">② 基準をつくる</button>
+    <button class="tab" data-tab="merge" role="tab" data-requires="merge">② 基準とロープレ</button>
+    <span class="tab-group" data-requires="masters">設定</span>
     <button class="tab" data-tab="products" role="tab" data-requires="masters">商品マスタ</button>
-    <button class="tab" data-tab="glossary" role="tab" data-requires="masters">ブランド・用語</button>
-    <button class="tab" data-tab="staff" role="tab" data-requires="masters">スタッフ</button>
-    <button class="tab" data-tab="companies" role="tab" data-requires="masters">会社</button>
+    <button class="tab" data-tab="glossary" role="tab" data-requires="masters">言葉づかい</button>
+    <button class="tab" data-tab="staff" role="tab" data-requires="masters">メンバー</button>
   </nav>
   <div class="who" id="who" hidden>
     <span id="who-name"></span>
@@ -114,6 +115,7 @@
       </aside>
 
       <div class="content">
+        <p class="lede">溜めた案件を判断基準に束ね、そこから<strong>ロープレモードを作ります</strong>。作ったモードの削除もここです。</p>
         <div class="field-row">
           <select class="input" id="criteria-select"></select>
           <button class="btn btn-ghost btn-sm" id="criteria-download">.md保存</button>
@@ -138,6 +140,7 @@
   <section class="panel" id="panel-products">
     <div class="content">
       <h2>商品マスタ</h2>
+      <p class="lede">ロープレでお客様が持ち込む品物を登録します。全社共通です。</p>
       <p class="hint">
         ロープレでお客様が持ち込む品物です。シナリオに付けた品物がそのまま出ます。付けていなければカテゴリから1点が選ばれます。
         状態と正解の買取額は実施ごとに決まり、<strong>受講者には採点が終わるまで見えません。</strong>
@@ -199,6 +202,7 @@
   <section class="panel" id="panel-glossary">
     <div class="content narrow">
       <h2>ブランド・用語マスタ</h2>
+      <p class="lede">書き起こしの表記ゆれを直し、方言が標準語に均されるのを防ぎます。</p>
       <p class="hint">
         書き起こしの精度向上と、表記揺れの統一に使われます。1行1件、<code>正式表記 = よくある誤り1, 誤り2</code> の形式。
         誤りが無ければ正式表記だけでも構いません。Excelから貼り付けられます。
@@ -224,6 +228,7 @@
   <section class="panel" id="panel-staff">
     <div class="content">
       <h2>スタッフ（個人コード）</h2>
+      <p class="lede">誰がログインできて、どこまで見えるかを決めます。</p>
       <p class="hint">
         個人コードで、見える範囲と触れる範囲が決まります。<br>
         <strong>受講者</strong>…ロープレと自分の記録だけ／<strong>指導者</strong>…①接客を集める・会社全員の記録／<strong>管理者</strong>…③統合とマスタ編集、スタッフ管理
@@ -255,20 +260,16 @@
         <span class="status" id="staff-status"></span>
       </div>
       <p class="hint">権限を変えると、その人は一度ログアウトされます（次のログインから新しい権限になります）。</p>
-    </div>
-  </section>
 
-  <!-- 会社 -->
-  <section class="panel" id="panel-companies">
-    <div class="content">
+      <hr>
       <h2>会社</h2>
+      <p class="lede">ログインに使う会社コードとパスワードを作ります。</p>
       <p class="hint">
         <strong>実施記録は会社ごとに必ず分かれます。</strong>教材（案件・判断基準・モード・商品・用語）は
         「ナレッジ空間」が同じ会社どうしで共有されます。2社で同じ教材を使い、記録は混ぜない、という運用がこれになります。
       </p>
       <div class="table-wrap">
         <table class="records" id="company-table"></table>
-      </div>
       <div class="fb-grid">
         <label class="label">会社コード
           <input class="input" id="company-code" placeholder="例：clarisse">
@@ -282,17 +283,17 @@
         <label class="label">ナレッジ空間
           <input class="input" id="company-space" placeholder="空ならいまと同じ空間">
         </label>
-      </div>
       <div class="row row-actions">
         <button class="btn btn-primary" id="save-company">会社を登録・パスワード変更</button>
         <span class="status" id="company-status"></span>
-      </div>
       <p class="hint">
         既にある会社コードを入れると、名前とパスワードの変更になります。
         <strong>パスワードを変えると、その会社の全員がログインし直しになります。</strong>
       </p>
     </div>
   </section>
+
+  <!-- 会社 -->
 
 </main>
 
@@ -315,16 +316,18 @@
     <label class="label">客の声
       <select class="input" id="mode-voice"></select>
     </label>
-    <label class="label">持ち込む品物のカテゴリ
+    <label class="label">カテゴリ（絞り込み／未選択ならここからランダム）
       <select class="input" id="mode-category"></select>
     </label>
-    <label class="label">持ち込む品物を決める（任意・複数可）
+    <label class="label">持ち込む品物（任意・複数可）
+      <div id="mode-picked"></div>
       <div class="picker" id="mode-products"></div>
     </label>
     <p class="hint">
-      <strong>選んだ品物を全部まとめて持ってきます</strong>（「バッグと財布」のような持ち込み）。
-      何も選ばなければ、上のカテゴリから実施ごとに1点がランダムで選ばれます。<br>
-      どちらの場合も<strong>受講者には採点まで品物が見えません。</strong>モード名に品物名を入れると意味が無くなるので注意してください。
+      <strong>カテゴリをまたいで選べます。</strong>「バッグ＋指輪」のような持ち込みもそのまま作れます。
+      上のカテゴリ欄は絞り込みなので、切り替えても選んだものは消えません。<br>
+      何も選ばなければ、カテゴリから実施ごとにランダムで引きます。
+      どちらの場合も<strong>受講者には採点まで品物が見えません。</strong>
     </p>
     <div class="row row-end">
       <button class="btn btn-ghost" value="cancel">キャンセル</button>

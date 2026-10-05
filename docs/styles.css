@@ -479,3 +479,45 @@ li.item {
 }
 li.item > div { min-width: 0; }
 li.item .btn { flex: 0 0 auto; width: auto; }
+
+/* ---- 選択中の品物（カテゴリをまたいで選べるので、常に見せる） ---- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: .78rem;
+}
+.chip-x {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chip-x:hover { background: var(--surface-2); color: var(--error); }
+.picker .item-meta { margin-left: 8px; }
+
+/* ---- タブの群分け（教材／設定） ---- */
+.tab-group {
+  align-self: center;
+  margin: 0 2px 0 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+  font-size: .68rem;
+  color: var(--ink-2);
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.tabs > .tab-group:first-child { margin-left: 0; padding-left: 0; border-left: 0; }
+
+/* ---- 各画面の冒頭一行（何をする画面か） ---- */
+.lede { margin: -4px 0 14px; color: var(--ink-2); font-size: .82rem; }

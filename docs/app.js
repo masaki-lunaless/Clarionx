@@ -220,9 +220,24 @@ async function loadSituationProducts() {
   renderRunProducts();
 }
 
+// 現場では「バッグと指輪」のようにカテゴリをまたいで持ってくる。
+// カテゴリは絞り込みにしか使わず、選んだものは常に上に出す。
 function renderRunProducts() {
   const box = $('#run-products');
   if (!box) return;
+  const chosen = situationProducts.filter((p) => pickedForRun.has(p.id));
+  const picked = $('#run-picked');
+  if (picked) {
+    picked.innerHTML = chosen.length
+      ? `<div class="chips">${chosen
+          .map(
+            (p) => `<span class="chip">${esc([p.brand, p.name].filter(Boolean).join(' '))}
+              <button type="button" class="chip-x" data-unpick="${esc(p.id)}" aria-label="外す">×</button></span>`,
+          )
+          .join('')}</div>
+         <p class="hint">${chosen.length}点をまとめて持ってきます</p>`
+      : '';
+  }
   const cat = $('#run-category')?.value || '';
   const pool = cat ? situationProducts.filter((p) => p.category === cat) : situationProducts;
   box.innerHTML = pool.length
@@ -230,12 +245,19 @@ function renderRunProducts() {
         .map(
           (p) => `<label class="check">
             <input type="checkbox" value="${esc(p.id)}" ${pickedForRun.has(p.id) ? 'checked' : ''}>
-            <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}</span>
+            <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}<em class="item-meta">${esc(p.category)}</em></span>
           </label>`,
         )
         .join('')
     : '<p class="hint">このカテゴリに品物がありません。</p>';
 }
+
+$('#run-picked')?.addEventListener('click', (e) => {
+  const id = e.target.dataset.unpick;
+  if (!id) return;
+  pickedForRun.delete(id);
+  renderRunProducts();
+});
 
 $('#run-category')?.addEventListener('change', renderRunProducts);
 $('#run-products')?.addEventListener('change', (e) => {
@@ -243,6 +265,7 @@ $('#run-products')?.addEventListener('change', (e) => {
   if (!cb) return;
   if (cb.checked) pickedForRun.add(cb.value);
   else pickedForRun.delete(cb.value);
+  renderRunProducts();
 });
 $('#situation-reset')?.addEventListener('click', () => {
   const mode = modes.find((m) => m.id === current.modeId);
@@ -267,6 +290,7 @@ $('#start-run').addEventListener('click', async (e) => {
       scenario: $('#run-scenario')?.value,
       category: $('#run-category')?.value || undefined,
       difficulty: $('#run-difficulty')?.value || undefined,
+      itemCount: Number($('#run-item-count')?.value) || undefined,
       productIds: [...pickedForRun],
     }),
   );

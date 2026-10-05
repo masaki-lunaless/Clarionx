@@ -75,7 +75,7 @@ async function afterConnect(cfg) {
     await loadStaff();
   }
   // 触れる一番手前のタブを開く
-  const first = $$('.tab').find((t) => !t.hidden);
+  const first = $$('.tab[data-tab]').find((t) => !t.hidden);
   if (first) await activateTab(first.dataset.tab);
 }
 
@@ -498,6 +498,13 @@ async function openModeDialog(criteriaId) {
  * 選んだ品物は**全部まとめて**客が持ってくる（「バッグと財布」のような持ち込み）。
  * 何も選ばなければ、カテゴリから実施ごとに1点を引く。
  */
+/**
+ * 持ち込む品物の選び方。
+ *
+ * 現場では「バッグと指輪」のようにカテゴリをまたいで持ってくる。
+ * カテゴリは絞り込みにしか使わず、選んだものは常に上に出して、
+ * 切り替えても見失わないようにする。
+ */
 async function fillProductPickers() {
   const catSel = $('#mode-category');
   const box = $('#mode-products');
@@ -506,9 +513,17 @@ async function fillProductPickers() {
   const all = data?.products || [];
   const categories = data?.categories || [];
 
-  catSel.innerHTML = ['<option value="">すべてのカテゴリから</option>', ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+  if (!all.length) {
+    catSel.innerHTML = '<option value="">商品マスタが空です</option>';
+    box.innerHTML = '<p class="hint">商品マスタが空です。先に商品を登録してください。</p>';
+    $('#mode-picked').innerHTML = '';
+    return;
+  }
 
-  const renderPicker = () => {
+  catSel.innerHTML = ['<option value="">すべて</option>', ...categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+
+  const render = () => {
+    renderPickedChips($('#mode-picked'), all, pickedProducts, 'mode');
     const cat = catSel.value;
     const pool = cat ? all.filter((p) => p.category === cat) : all;
     box.innerHTML = pool.length
@@ -516,27 +531,42 @@ async function fillProductPickers() {
           .map(
             (p) => `<label class="check">
               <input type="checkbox" value="${esc(p.id)}" ${pickedProducts.has(p.id) ? 'checked' : ''}>
-              <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}<em class="item-meta">${esc(yen(p.new_price))}／${esc(p.retention)}%</em></span>
+              <span>${esc([p.brand, p.name].filter(Boolean).join(' '))}<em class="item-meta">${esc(p.category)}・${esc(yen(p.new_price))}／${esc(p.retention)}%</em></span>
             </label>`,
           )
           .join('')
-      : '<p class="hint">このカテゴリに商品がありません。商品マスタで登録してください。</p>';
+      : '<p class="hint">このカテゴリに商品がありません。</p>';
   };
-  renderPicker();
-  catSel.onchange = renderPicker;
-
-  // 選んだものはカテゴリを切り替えても覚えておく
+  render();
+  catSel.onchange = render;
   box.onchange = (e) => {
     const cb = e.target.closest('input[type=checkbox]');
     if (!cb) return;
     if (cb.checked) pickedProducts.add(cb.value);
     else pickedProducts.delete(cb.value);
+    render();
   };
+  $('#mode-picked').onclick = (e) => {
+    const id = e.target.dataset.unpick;
+    if (!id) return;
+    pickedProducts.delete(id);
+    render();
+  };
+}
 
-  if (!all.length) {
-    catSel.innerHTML = '<option value="">商品マスタが空です</option>';
-    box.innerHTML = '<p class="hint">商品マスタが空です。先に商品を登録してください。</p>';
-  }
+/** 選択中の品物を、絞り込みと関係なく常に出す */
+function renderPickedChips(box, all, picked, kind) {
+  if (!box) return;
+  const chosen = all.filter((p) => picked.has(p.id));
+  box.innerHTML = chosen.length
+    ? `<div class="chips">${chosen
+        .map(
+          (p) => `<span class="chip">${esc([p.brand, p.name].filter(Boolean).join(' '))}
+            <button type="button" class="chip-x" data-unpick="${esc(p.id)}" aria-label="外す">×</button></span>`,
+        )
+        .join('')}</div>
+       <p class="hint">${chosen.length}点をまとめて持ってきます（${esc([...new Set(chosen.map((p) => p.category))].join('・'))}）</p>`
+    : '<p class="hint">選んでいません。カテゴリから実施ごとに引きます。</p>';
 }
 
 $('#mode-dialog').addEventListener('close', async () => {
@@ -940,8 +970,8 @@ async function loadCompanies() {
     $('#staff-company').value = staffCompany;
   }
   if (!data.companies.length) {
-    status($('#company-status'), 'まだ会社がありません。まずここで1つ作ってください');
-    activateTab('companies');
+    status($('#company-status'), 'まだ会社がありません。下の欄で1つ作ってください');
+    activateTab('staff'); // 会社はメンバータブの中に入れた
   }
 }
 

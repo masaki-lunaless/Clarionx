@@ -490,6 +490,21 @@ const tight = priceFor(rows.product, CONDITIONS[1], ACCESSORIES[1], 0.12);
 check('難易度: やさしいほど査定額の幅が広い', wide.high - wide.low > tight.high - tight.low);
 check('難易度: 中心は変わらない', wide.fair === tight.fair);
 
+/* --------- カテゴリをまたいだ持ち込み --------- */
+
+// 現場では「バッグと指輪」のように、ジャンルの違うものをまとめて持ってくる
+attachedProducts = [];
+sqlLog = [];
+const multi = await (await post('/api/runs', { modeId: 'mode1', itemCount: 3 })).json();
+check('持ち込み: 点数を指定して引ける', multi.itemCount >= 1, multi.itemCount);
+check('持ち込み: カテゴリを絞らなければ全体から引く',
+  !sqlLog.some((q) => q.includes('FROM products') && q.includes('category = ?')),
+  sqlLog.filter((q) => q.includes('FROM products')).join(' | ').slice(0, 140));
+check('持ち込み: 点数は3点まで',
+  (await (await post('/api/runs', { modeId: 'mode1', itemCount: 99 })).json()).itemCount <= 3);
+check('持ち込み: 0や負数は1点に丸める',
+  (await (await post('/api/runs', { modeId: 'mode1', itemCount: 0 })).json()).itemCount === 1);
+
 /* --------- 商品マスタは全社共通 --------- */
 
 // 会社ごとに100点ずつ入れ直すのは、導入のたびに効いてくる手間になる。

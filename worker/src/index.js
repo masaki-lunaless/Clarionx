@@ -1016,8 +1016,10 @@ const routes = [
       if (attached.length) {
         items = drawItems(attached, difficultyOf(difficulty).tolerance);
       } else if (await db.countProducts(env, PRODUCTS)) {
+        // 現場では1人が複数点を持ってくる。カテゴリを絞らなければまたいで引く
+        const count = Math.min(3, Math.max(1, Math.round(Number(body.itemCount)) || 1));
         items = drawItems(
-          [await db.drawProduct(env, PRODUCTS, { category: body.category || mode.product_category })],
+          await db.drawProducts(env, PRODUCTS, { category: body.category || mode.product_category, count }),
           difficultyOf(difficulty).tolerance,
         );
       }
