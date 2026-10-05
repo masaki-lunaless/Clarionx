@@ -62,6 +62,12 @@ for (const rel of FILES) {
     if (!defined.has(name)) missing.add(name);
   }
   check(`${rel}: 呼んでいる関数がすべて定義されている`, missing.size === 0, [...missing].join(', '));
+
+  // 同じ名前を2回 const すると、読み込んだ瞬間にファイルごと死ぬ。
+  // ブロックを移し替えるときに起きやすい
+  const tops = [...src.matchAll(/^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  const dup = tops.filter((n, i) => tops.indexOf(n) !== i);
+  check(`${rel}: 同じ名前を2回宣言していない`, dup.length === 0, [...new Set(dup)].join(', '));
 }
 
 /* ---- 画面のidと、JSが触るidが合っているか ---- */

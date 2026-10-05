@@ -203,3 +203,18 @@ ALTER TABLE runs ADD COLUMN customer_type TEXT;
 ALTER TABLE runs ADD COLUMN scenario TEXT;
 ALTER TABLE runs ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'normal';
 -- 商品マスタは client = '*' の1本に統一する（会社・ナレッジ空間をまたいで共通）
+
+-- 課題の割り当て（後から追加）。管理者が「誰にどのモードを」を決める。
+CREATE TABLE IF NOT EXISTS assignments (
+  id         TEXT PRIMARY KEY,
+  company    TEXT NOT NULL,
+  staff_id   TEXT,
+  mode_id    TEXT NOT NULL REFERENCES modes (id) ON DELETE CASCADE,
+  difficulty TEXT NOT NULL DEFAULT 'normal',
+  note       TEXT NOT NULL DEFAULT '',
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assign_company ON assignments (company, active);
+CREATE INDEX IF NOT EXISTS idx_assign_staff ON assignments (staff_id);
+ALTER TABLE modes ADD COLUMN item_count INTEGER NOT NULL DEFAULT 1;

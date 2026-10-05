@@ -61,6 +61,7 @@ const rows = {
 const auth = { company: null, staff: null, session: null };
 let productCount = 1;
 let attachedProducts = []; // シナリオにひも付いた商品
+let assignments = [{ id: 'as1', company: 'clientA', staff_id: null, mode_id: 'mode1', difficulty: 'normal', note: 'まず黙って聞く', mode_name: '迷い客モード' }];
 
 let sqlLog = [];
 let missingRow = null; // '案件が見つかりません' 等を再現したいときにテーブル名を入れる
@@ -74,6 +75,7 @@ function stubDB() {
       if (has('FROM cases WHERE id')) return missingRow === 'cases' ? null : rows.case;
       if (has('FROM criteria WHERE id')) return missingRow === 'criteria' ? null : rows.criteria;
       if (has('FROM modes m JOIN criteria')) return missingRow === 'modes' ? null : rows.mode;
+      if (has('FROM assignments a JOIN modes m')) return assignments[0] ? { ...assignments[0], ...rows.mode, id: 'as1', mode_id: 'mode1' } : null;
       if (has('FROM questions WHERE id')) return { id: 'q1', case_id: 'case1', turning_point_id: 'tp1', seq: 0 };
       if (has('FROM glossary WHERE client')) return { text: 'ヴァンドーム青山 = バンドーム', dialect: '関西弁。ほんま、なんぼ、〜やねん、おおきに' };
       if (has('FROM products WHERE id')) return rows.product;
@@ -96,6 +98,7 @@ function stubDB() {
       if (has('FROM questions q')) return [{ question: 'なぜですか', answer: '客の手元を見ていたので', quote: '引用' }];
       if (has('FROM products WHERE')) return productCount ? [rows.product] : [];
       if (has('FROM mode_products mp JOIN products p')) return attachedProducts;
+      if (has('FROM assignments a JOIN modes m')) return assignments;
       if (has('FROM staff s WHERE s.company')) return [{ ...auth.staff, run_count: 0 }];
       if (has('FROM companies c ORDER BY')) return [{ code: 'clientA', name: 'A社', knowledge_space: 'shared' }];
       return [];
@@ -501,6 +504,30 @@ const tight = priceFor(rows.product, CONDITIONS[1], ACCESSORIES[1], 0.12);
 check('難易度: やさしいほど査定額の幅が広い', wide.high - wide.low > tight.high - tight.low);
 check('難易度: 中心は変わらない', wide.fair === tight.fair);
 
+/* ========================= 課題の割り当て ============================ */
+
+// シチュエーションを受講者本人に選ばせると、やさしい設定と知っている品物を
+// 選べてしまい訓練にならない。管理者が「誰にどのモードを」を決める形にする。
+const myTasks = await (await call('/api/assignments')).json();
+check('課題: 自分に出ているものが返る', myTasks.assignments.length === 1, JSON.stringify(myTasks.assignments));
+check('課題: 管理者の一言が付く', myTasks.assignments[0].note === 'まず黙って聞く');
+
+const assignedRun = await (await post('/api/runs', { assignmentId: 'as1' })).json();
+check('課題: 課題から開始できる', assignedRun.runId !== undefined, JSON.stringify(assignedRun).slice(0, 100));
+check('課題: 一言が開始時にも返る', assignedRun.note === 'まず黙って聞く');
+
+// 受講者は差し替えられない。指導者以上だけが教材確認のために差し替えられる
+auth.session = adminSession({ role: 'trainee', staff_id: 'staff-1' });
+const forced = await (await post('/api/runs', { modeId: 'mode1', customerType: 'showoff', difficulty: 'easy' })).json();
+check('課題: 受講者の客タイプ差し替えは効かない', forced.mode.customer_type === 'complaint', forced.mode.customer_type);
+check('課題: 受講者は教材一覧を開けない', (await call('/api/modes')).status === 403);
+asAdmin();
+const byAdmin = await (await post('/api/runs', { modeId: 'mode1', customerType: 'showoff' })).json();
+check('課題: 指導者以上は差し替えられる', byAdmin.mode.customer_type === 'showoff');
+
+check('課題: 割り当ては管理者だけが作れる',
+  (await (async () => { auth.session = adminSession({ role: 'trainer' }); const r = await post('/api/assignments', { modeId: 'mode1' }); asAdmin(); return r; })()).status === 403);
+
 /* --------- カテゴリをまたいだ持ち込み --------- */
 
 // 現場では「バッグと指輪」のように、ジャンルの違うものをまとめて持ってくる
@@ -698,7 +725,9 @@ check('共有トークン: 品物は選べるが相場は見えない',
   JSON.stringify(legacyProducts.products[0]));
 check('共有トークン: スタッフも会社も開かない',
   (await legacyGet('/api/staff')).status === 403 && (await legacyGet('/api/companies')).status === 403);
-check('共有トークン: 練習はできる', (await legacyGet('/api/modes')).status === 200);
+// 受講者はモード一覧ではなく、自分に割り当てられた課題を見る
+check('共有トークン: 教材一覧は開かない', (await legacyGet('/api/modes')).status === 403);
+check('共有トークン: 自分の課題は見える', (await legacyGet('/api/assignments')).status === 200);
 
 /* --------- 会社をまたげるのはシステム管理者だけ --------- */
 

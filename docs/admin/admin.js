@@ -38,7 +38,7 @@ $$('.tab').forEach((tab) => tab.addEventListener('click', () => activateTab(tab.
 
 // GitHub Pages は max-age=600 なので、配信し直した直後の10分は古いJSが動き続ける。
 // 画面とAPIの形が変わった直後だと黙って壊れるため、Workerが返す印と見比べて promptする。
-const BUILD = '2026-10-05a';
+const BUILD = '2026-10-05b';
 
 function checkBuild(cfg) {
   if (!cfg?.build || cfg.build === BUILD) return;
@@ -93,6 +93,7 @@ async function afterConnect(cfg) {
     await loadProducts();
     await loadCompanies();
     await loadStaff();
+    await loadAssignments();
   }
   // 触れる一番手前のタブを開く
   const first = $$('.tab[data-tab]').find((t) => !t.hidden);
@@ -601,6 +602,7 @@ $('#mode-dialog').addEventListener('close', async () => {
       scenario: $('#mode-scenario').value,
       voice: $('#mode-voice').value,
       productCategory: $('#mode-category')?.value || '',
+      itemCount: Number($('#mode-item-count')?.value) || 1,
       productIds: [...pickedProducts],
     })
     .catch((err) => {
@@ -610,6 +612,7 @@ $('#mode-dialog').addEventListener('close', async () => {
   if (out) {
     await refreshModes();
     renderAdminModes();
+    await loadAssignments();
   }
 });
 
@@ -691,7 +694,73 @@ $('#admin-mode-list')?.addEventListener('click', async (e) => {
   if (!ok) return;
   await refreshModes();
   renderAdminModes();
+  await loadAssignments();
   status($('#merge-status'), '削除しました', 'ok');
+});
+
+/* ------------------------------ 課題の割り当て ---------------------------- */
+
+// シチュエーションを受講者本人に選ばせると、やさしい設定と知っている品物を
+// 選べてしまい訓練にならない。ここで「誰にどのモードを」を決める。
+let assignments = [];
+
+async function loadAssignments() {
+  const data = await api.listAssignments().catch(() => null);
+  if (!data) return;
+  assignments = data.assignments;
+  fillSelect($('#assign-mode'), modes.map((m) => ({ value: m.id, label: m.name })));
+  fillSelect($('#assign-staff'), [
+    { value: '', label: '会社の全員' },
+    ...staffList.filter((st) => st.active).map((st) => ({ value: st.id, label: `${st.name}（${st.code}）` })),
+  ]);
+  fillSelect($('#assign-difficulty'), (config.difficulties || []).map((d) => ({ value: d.id, label: d.label })), 'normal');
+  renderAssignments();
+}
+
+function renderAssignments() {
+  const diff = (id) => (config.difficulties || []).find((d) => d.id === id)?.label || id;
+  $('#assign-table').innerHTML = `
+    <thead><tr><th>誰に</th><th>モード</th><th>難易度</th><th>ひとこと</th><th></th></tr></thead>
+    <tbody>${assignments
+      .map(
+        (a) => `<tr>
+          <td>${a.staff_id ? esc(`${a.staff_name}（${a.staff_code}）`) : '<em>会社の全員</em>'}</td>
+          <td>${esc(a.mode_name)}</td>
+          <td>${esc(diff(a.difficulty))}</td>
+          <td>${esc(a.note || '')}</td>
+          <td><button class="btn btn-ghost btn-sm danger" data-assign-del="${esc(a.id)}">取り消す</button></td>
+        </tr>`,
+      )
+      .join('')}</tbody>`;
+  if (!assignments.length) status($('#assign-status'), 'まだ課題が出ていません。受講者の画面は空のままです');
+}
+
+$('#add-assign')?.addEventListener('click', async (e) => {
+  const el = $('#assign-status');
+  const out = await run(e.target, el, '登録中…', () =>
+    api.createAssignment({
+      modeId: $('#assign-mode').value,
+      staffId: $('#assign-staff').value || undefined,
+      difficulty: $('#assign-difficulty').value,
+      note: $('#assign-note').value,
+    }),
+  );
+  if (!out) return;
+  $('#assign-note').value = '';
+  assignments = out.assignments;
+  renderAssignments();
+  status(el, '課題を出しました', 'ok');
+});
+
+$('#assign-table')?.addEventListener('click', async (e) => {
+  const id = e.target.dataset.assignDel;
+  if (!id) return;
+  const target = assignments.find((a) => a.id === id);
+  if (!confirm(`「${target?.mode_name || ''}」の割り当てを取り消します。実施済みの記録は残ります。よろしいですか。`)) return;
+  if (await run(null, $('#assign-status'), '取消中…', () => api.deleteAssignment(id))) {
+    await loadAssignments();
+    status($('#assign-status'), '取り消しました', 'ok');
+  }
 });
 
 /* ------------------------------- 商品マスタ ------------------------------ */
